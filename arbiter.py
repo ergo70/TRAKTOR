@@ -108,6 +108,8 @@ API_HOST, API_PORT = API_ADDRESS.split(':')
 API_KEY = config['DEFAULT']['APIKey']
 AUTO_HEAL = bool(config['DEFAULT'].get('AutoHeal', False))
 PRE_16_COMPATIBILITY = bool(config['DEFAULT'].get('Pre16Compatibility', False))
+SSL_KEYFILE = config['DEFAULT'].get('SSL_KEYFILE')
+SSL_CERTFILE = config['DEFAULT'].get('SSL_CERTFILE')
 
 COMMON_PATH_V1 = "/v1/arbiter"
 
@@ -283,7 +285,7 @@ $$;""".format(NODE)
 
 
 class SubscriptionControl(BaseModel):
-    source_node: int
+    inbound_node: int
     connection_string: Optional[str] = None
 
 
@@ -614,7 +616,7 @@ def refresher_thread_function(evt, sub, peer_conn_str):
 @app.get(COMMON_PATH_V1 + "/resolution/history", response_model=ResolutionHistory, tags=['history'])
 async def history(request: Request, api_key: APIKey = Depends(api_key_auth)):
     """API to show the local conflict resolution history."""
-    result = {}
+    result = result = {'node': NODE, 'resolutions': []}
     with closing(psycopg2.connect(CONN_STR)) as conn:
         # Handle the transaction and closing the cursor
         with conn, conn.cursor() as cur:
@@ -622,7 +624,8 @@ async def history(request: Request, api_key: APIKey = Depends(api_key_auth)):
             cur.execute(
                 """select json_array(select row_to_json(t) from (select * from trktr.history h order by occurred desc) as t);""")
             r = cur.fetchone()
-            result = {'node': NODE, 'resolutions': r[0]}
+            if r[0]:
+                result['resolutions'] = r[0]
 
     return result
 
@@ -679,29 +682,30 @@ async def replicaset_status(request: Request, api_key: APIKey = Depends(api_key_
 @app.delete(COMMON_PATH_V1 + "/subscription/control", tags=['add_subscription'])
 async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIKey = Depends(api_key_auth)):
     """API to add or remove a Traktor SUBSCRIPTION to/from the local PostgreSQL database server."""
-    sql = None
+    sql = "MURKS"
     try:
         conn = psycopg2.connect(CONN_STR)
         conn.autocommit = True
         cur = conn.cursor()
 
         if (request.method == 'PUT'):
-            # print("PUT")
+            #print("PUT")
             cur.execute("""SELECT current_setting('server_version')::float;""")
             server_version = cur.fetchone()[0]
-            # print(server_version)
-            sub_name = "trktr_sub_{}_{}".format(NODE, control.source_node)
-            if server_version < 16:
+            #print(server_version)
+            sub_name = "trktr_sub_{}_{}".format(NODE, control.inbound_node)
+            if server_version < 16.0:
                 sql = """CREATE SUBSCRIPTION {} CONNECTION '{}' PUBLICATION trktr_pub_multimaster WITH (copy_data = false, enabled = true, disable_on_error = true);"""
             elif PRE_16_COMPATIBILITY:
                 sql = """CREATE SUBSCRIPTION {} CONNECTION '{}' PUBLICATION trktr_pub_multimaster WITH (copy_data = false, enabled = true, origin = any, disable_on_error = true);"""
             else:
                 sql = """CREATE SUBSCRIPTION {} CONNECTION '{}' PUBLICATION trktr_pub_multimaster WITH (copy_data = false, enabled = true, origin = none, disable_on_error = true);"""
-                sql = sql.format(sub_name,
+            
+            sql = sql.format(sub_name,
                                  control.connection_string)
-                # print(sql)
-                cur.execute(sql)
-                return Response(status_code=201)
+            #print(sql)
+            cur.execute(sql)
+            return Response(status_code=201)
         elif (request.method == 'DELETE'):
             sql = """DROP SUBSCRIPTION trktr_sub_{}_{};""".format(
                 NODE, control.source_node)
@@ -711,7 +715,7 @@ async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIK
     finally:
         conn.close()
 
-    return Response(status_code=200)
+    return Response(status_code=201)
 
 
 @app.patch(COMMON_PATH_V1 + "/replicaset".format(NODE), tags=['replicaset_commit'])
@@ -765,5 +769,9 @@ if __name__ == "__main__":
     wt = threading.Thread(target=sub_watcher_thread_function, args=())
     wt.start()
 
-    uvicorn.run("arbiter:app", host=API_HOST, port=int(API_PORT), reload=False,
-                ssl_keyfile="arbiter.key", ssl_certfile="arbiter.crt")
+    if SSL_CERTFILE and SSL_KEYFILE:
+        uvicorn.run("arbiter:app", host=API_HOST, port=int(API_PORT), reload=False,
+                    ssl_keyfile=SSL_KEYFILE, ssl_certfile=SSL_CERTFILE)
+    else:
+        uvicorn.run("arbiter:app", host=API_HOST,
+                    port=int(API_PORT), reload=False)
