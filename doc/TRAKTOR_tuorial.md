@@ -286,6 +286,7 @@ Initialize node 2:
 curl --location --request PUT 'http://localhost:8082/v1/arbiter/control' \
 --header 'X-API-KEY: LetMeIn'
 ```
+201 Created
 
 ```
 curl --location --request PUT 'http://localhost:8082/v1/arbiter/subscription/control' \
@@ -303,7 +304,6 @@ curl --location --request PUT 'http://localhost:8082/v1/arbiter/subscription/con
 ```
 201 Created
 
-```
 On node 0:
 
 ```
