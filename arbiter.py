@@ -100,16 +100,16 @@ config = configparser.ConfigParser()
 config.read('arbiter.ini')
 
 LISTEN_TIMEOUT = 1
-CHECK_INTERVAL = int(config['DEFAULT'].get('CheckInterval', 10))
-NODE = int(config['DEFAULT']['NodeID'])
+CHECK_INTERVAL = config['DEFAULT'].getint('CheckInterval', 10)
+NODE = config['DEFAULT'].getint('NodeID')
 CONN_STR = config['DEFAULT']['ConnectionString']
 API_ADDRESS = config['DEFAULT']['APIAddress']
 API_HOST, API_PORT = API_ADDRESS.split(':')
 API_KEY = config['DEFAULT']['APIKey']
-AUTO_HEAL = bool(config['DEFAULT'].get('AutoHeal', False))
-PRE_16_COMPATIBILITY = bool(config['DEFAULT'].get('Pre16Compatibility', False))
-SSL_KEYFILE = config['DEFAULT'].get('SSL_KEYFILE')
-SSL_CERTFILE = config['DEFAULT'].get('SSL_CERTFILE')
+AUTO_HEAL = config['DEFAULT'].getboolean('AutoHeal', False)
+PRE_16_COMPATIBILITY = config['DEFAULT'].getboolean('Pre16Compatibility', False)
+SSL_KEYFILE = config['DEFAULT'].get('SSLKeyfile')
+SSL_CERTFILE = config['DEFAULT'].get('SSLCertfile')
 
 COMMON_PATH_V1 = "/v1/arbiter"
 
@@ -682,7 +682,7 @@ async def replicaset_status(request: Request, api_key: APIKey = Depends(api_key_
 @app.delete(COMMON_PATH_V1 + "/subscription/control", tags=['add_subscription'])
 async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIKey = Depends(api_key_auth)):
     """API to add or remove a Traktor SUBSCRIPTION to/from the local PostgreSQL database server."""
-    sql = "MURKS"
+    sql = None
     try:
         conn = psycopg2.connect(CONN_STR)
         conn.autocommit = True
