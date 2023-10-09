@@ -1,5 +1,5 @@
 # TRAKTOR Tutorial
-TRAKTOR is a true multimaster replication solution for PostgreSQL on top of logical replication, implemented as a shared-nothing architecture.
+TRAKTOR is a true multimaster replication solution for vanilla PostgreSQL on top of logical replication, implemented as a shared-nothing architecture.
 It has been tested with 15.x and 16.x.
 In this tutorial, you will initially setup a two node cluster and then extend it to three nodes.
 
