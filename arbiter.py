@@ -59,6 +59,10 @@ tags_metadata = [
         "description": "Init Node.",
     },
     {
+        "name": "history",
+        "description": "Auto resolution history.",
+    },
+    {
         "name": "drop_node",
         "description": "Drop Node.",
     },
@@ -158,7 +162,7 @@ FUNCTIONS = """
 do $$
 begin
 if (current_setting('server_version')::float < 16.0 OR (select pre_16_compatibility from trktr.v_status)) then
-	CREATE OR REPLACE FUNCTION traktor.tf_break_cycle()
+	CREATE OR REPLACE FUNCTION trktr.tf_break_cycle()
  RETURNS trigger
  LANGUAGE plpgsql
  STRICT
@@ -343,28 +347,25 @@ async def api_key_auth(api_key_header: str = Security(api_key_header)):
 
 def setup_db_objects():
     """Create all necessary database objects on demand."""
-    try:
-        with closing(psycopg2.connect(CONN_STR)) as conn:
-            with conn, conn.cursor() as cur:
-                cur.execute(
-                    SCHEMA)
-                logger.debug("Schema")
-                cur.execute(
-                    TABLES)
-                logger.debug("Tables")
-                cur.execute(
-                    VIEWS)
-                logger.debug("Views")
-                cur.execute(
-                    FUNCTIONS)
-                logger.debug("Functions")
-                cur.execute(PUBLICATIONS)
-                logger.debug("Publications")
-                cur.execute("LISTEN repchanged;")
-                logger.debug("Repchanged")
-                logger.info("Node created")
-    except Exception as e:
-        logger.error(e)
+    with closing(psycopg2.connect(CONN_STR)) as conn:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                SCHEMA)
+            logger.debug("Schema")
+            cur.execute(
+                TABLES)
+            logger.debug("Tables")
+            cur.execute(
+                VIEWS)
+            logger.debug("Views")
+            cur.execute(
+                FUNCTIONS)
+            logger.debug("Functions")
+            cur.execute(PUBLICATIONS)
+            logger.debug("Publications")
+            cur.execute("LISTEN repchanged;")
+            logger.debug("Repchanged")
+            logger.info("Node created")
 
 
 def drop_db_objects():
@@ -381,8 +382,6 @@ def drop_db_objects():
         subs = cur.fetchall()
         for sub in subs:
             cur.execute("""DROP SUBSCRIPTION {};""". format(sub[0]))
-    except Exception as e:
-        logger.error(e)
     finally:
         conn.close()
 
@@ -647,11 +646,14 @@ async def status(request: Request, api_key: APIKey = Depends(api_key_auth)):
 @app.delete(COMMON_PATH_V1 + "/control".format(NODE), tags=['drop_node'])
 async def node_ctrl(request: Request, api_key: APIKey = Depends(api_key_auth)):
     """API to initialize the local PostgreSQL database server for Traktor, or drop it from the Traktor cluster."""
-    if (request.method == 'PUT'):
-        setup_db_objects()
-        return Response(status_code=201)
-    elif (request.method == 'DELETE'):
-        drop_db_objects()
+    try:
+        if (request.method == 'PUT'):
+            setup_db_objects()
+            return Response(status_code=201)
+        elif (request.method == 'DELETE'):
+            drop_db_objects()
+    except Exception as e:
+        return Response(status_code=500, content=dumps({'error': str(e)}), media_type="application/json")
 
     return Response(status_code=200)
 
