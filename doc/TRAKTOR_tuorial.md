@@ -366,4 +366,4 @@ And on your new node 2:
 |3|Hello, Node 2|
 |4|Hello again, Node 2|
 
-And that's it. A fully functional three node multimaster replicating cluster with vanilla PostgreSQL servers.
+And that's it. A fully functional three node multimaster replicating cluster with vanilla PostgreSQL servers. The hard work of designing a conflict free schema begins now. Stay tuned.
