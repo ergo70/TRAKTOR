@@ -69,6 +69,7 @@ Create the replication user:
 
 `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
 
+This is not correct, the documentation says otherwise. Once I found the correct combination of rights, I'll update this. But now for the tutorial, SUPERUSER will do.
 Unfortunately, PostgreSQL requires a SUPERUSER in order to control logical replication. Beyond this tutorial, more security than a Password is advisable.
 
 Now, on the arbiter nodes:
