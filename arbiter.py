@@ -142,7 +142,7 @@ PUBLICATIONS = """DO $$ BEGIN IF NOT EXISTS (SELECT true FROM pg_publication WHE
 
 VIEWS = """CREATE OR REPLACE VIEW trktr.v_status
  AS SELECT {} as node_id,
- (SELECT setting || '/' || pg_current_logfile() FROM pg_settings WHERE name ='data_directory') as current_logfile_path,
+ (SELECT setting || '/' || pg_current_logfile('jsonlog') FROM pg_settings WHERE name ='data_directory') as current_logfile_path,
  not exists ((SELECT true FROM pg_subscription WHERE not subenabled AND subname like 'trktr_sub_{}_%' limit 1)) as replicating,
  exists ((SELECT true FROM trktr.history limit 1)) as tainted,
  (select count(*) from trktr.history where resolved is not null) as auto_resolved,
