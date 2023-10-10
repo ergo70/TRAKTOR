@@ -78,6 +78,7 @@ CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
 GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
 GRANT pg_create_subscription TO traktor_arbiter;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO traktor_arbiter;
+GRANT SELECT ON pg_subscription TO traktor_arbiter;
 ```
 
 Still, the user runs with elevated privileges, so beyond this tutorial, more security than a Password is advisable.
@@ -268,6 +269,7 @@ CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
 GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
 GRANT pg_create_subscription TO traktor_arbiter;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO traktor_arbiter;
+GRANT SELECT ON pg_subscription TO traktor_arbiter;
 ```
 
 And the multimaster.reptest Table:
