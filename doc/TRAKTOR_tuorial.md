@@ -71,6 +71,7 @@ Unfortunately, PostgreSQL < 16.x requires SUPERUSER privilege in order to create
 Since 16.x, this is not required anymore. According to the [documentation](https://www.postgresql.org/docs/16/logical-replication-security.html), membership in pg_create_subscription is sufficient, but SUPERUSER will still work. So for the sake of simplicity, you might just continue with SUPERUSER.
 
 before 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
+
 since 16.x:
 ```
 CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
@@ -259,6 +260,7 @@ Connect to each new database and create a schema:
 Create the replication user:
 
 before 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
+
 since 16.x:
 ```
 CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
