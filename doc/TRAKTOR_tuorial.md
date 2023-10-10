@@ -67,10 +67,18 @@ Connect to each new database and create a schema:
 
 Create the replication user:
 
-`CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
+Unfortunately, PostgreSQL < 16.x requires SUPERUSER privilege in order to create logical replication subscriptions.
+Since 16.x, this is not required anymore. According to the [documentation](https://www.postgresql.org/docs/16/logical-replication-security.html), membership in pg_create_subscription is sufficient, but SUPERUSER will still work. So for the sake of simplicity, you might just continue with SUPERUSER.
 
-This is not correct, the documentation says otherwise. Once I found the correct combination of rights, I'll update this. But now for the tutorial, SUPERUSER will do.
-Unfortunately, PostgreSQL requires a SUPERUSER in order to control logical replication. Beyond this tutorial, more security than a Password is advisable.
+< 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
+>= 16.x:
+```
+CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
+GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
+GRANT pg_create_subscription TO traktor_arbiter;
+```
+
+Still, the user runs with elevated privileges, so beyond this tutorial, more security than a Password is advisable.
 
 Now, on the arbiter nodes:
 
@@ -238,7 +246,7 @@ Congratulations! You have just set up your first multimaster replication cluster
 
 ## Extending the cluster
 
-We add another PostgreSQL 16.x server on port 5435, so change the `port` entry in postgresql.conf accordingly.
+We add another PostgreSQL 16.x server on ports 5435, so change the `port` entry in postgresql.conf accordingly.
 
 Create the databases:
 
@@ -250,7 +258,13 @@ Connect to each new database and create a schema:
 
 Create the replication user:
 
-`CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
+< 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
+>= 16.x:
+```
+CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
+GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
+GRANT pg_create_subscription TO traktor_arbiter;
+```
 
 And the multimaster.reptest Table:
 
@@ -262,7 +276,7 @@ CREATE TABLE multimaster.reptest (
 );
 ```
 
-Now, on the arbiter node:
+Next, on the arbiter node:
 
 ### Node 2
 Create a new directory as shown above, with the following arbiter.ini
@@ -341,7 +355,7 @@ curl --location --request PATCH 'http://localhost:8082/v1/arbiter/replicaset' \
 ```
 200 OK
 
-And test it.
+Test it.
 
 On node 2:
 
