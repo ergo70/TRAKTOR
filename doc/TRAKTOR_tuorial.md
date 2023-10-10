@@ -237,7 +237,7 @@ Congratulations! You have just set up your first multimaster replication cluster
 
 ## Extending the cluster
 
-We add another PostgreSQL 16.x server on ports 5435, so change the `port` entry in postgresql.conf accordingly.
+We add another PostgreSQL 16.x server on port 5435, so change the `port` entry in postgresql.conf accordingly.
 
 Create the databases:
 
