@@ -389,3 +389,30 @@ And on your new node 2:
 |4|Hello again, Node 2|
 
 And that's it. A fully functional three node multimaster replicating cluster with vanilla PostgreSQL servers. The hard work of designing a conflict free schema begins now. Stay tuned.
+
+## Automatic conflict resolution
+
+In case of conflicting keys in replicated TABLEs, PostgreSQL will stop the replication.
+Usually, this has to be fixed manually, e.g. as described [here](https://www.postgresql.fastware.com/blog/addressing-replication-conflicts-using-alter-subscription-skip). TRAKTOR can do this atomatically if `AutoHeal` is activated. Normally, such conflicts are rare, but can occur if the cluster experienced a split-brain situation, i.e. not all nodes could communicate with each other due to network issues.
+
+Let's try:
+
+1. Stop the PostgreSQL server for node 0. The Arbiters can keep running
+1. On node 1: `INSERT INTO multimaster.reptest (id, payload) VALUES (5, 'Oh no!');`
+1. Stop node 1
+1. Start node 0
+1. On node 0: `INSERT INTO multimaster.reptest (id, payload) VALUES (5, 'A conflict!');`
+1. Start node 1
+
+This was the split-brain. Node 0 and 1 now have conflicting rows for the same key. The replication stops immediately but the Arbiter nodes notice this, automatically apply the necessary `ALTER SUBSCRIPTION SKIP` commands, and re-ENABLE the affected SUBSCRIPTIONs.
+Better yet, they also write the cause of the conflict(s) into trktr.history. Because the conflict was solved purely technical, you might want to look up the offending entries in trktr.history and fix the state of the cluster on the logical level. But that is optional.
+
+trktr.history on each node now will contain a row like this:
+
+|subscription|occurred|lsn|relation|key|value|resolved|
+|------------|--------|---|--------|---|-----|--------|
+|trktr_sub_0_1|2023-10-11 11:15:15.099|0/28F6BC8|multimaster.reptest|id|5|2023-10-11 11:15:18.291776|
+
+Cool, ain't it?
+
+Since the necessary information has to be parsed out of the PostgreSQL server logfile, TRAKTOR uses a language agnostic parser. It should work with all languages, but only English and German have been tested.
