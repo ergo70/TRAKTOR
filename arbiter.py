@@ -478,7 +478,7 @@ def find_new_conflicts():
                         lsn_match = search(finished_at_LSN_regex, context)
                         if lsn_match:
                             # print("L", lsn.groups())
-                            lsn = lsn.group()
+                            lsn = lsn_match.group()
                         detail = line.get("detail")
                         if detail:
                             detail_match = search(key_value_regex, detail)
@@ -497,7 +497,7 @@ def find_new_conflicts():
                                     with conn, conn.cursor() as cur:
                                         cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
                                             origin, timestamp, lsn, relation, key, value))
-                                        logger.INFO(
+                                        logger.info(
                                             "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
                             except Exception as e:
                                 logger.error(e)
