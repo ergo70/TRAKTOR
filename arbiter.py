@@ -36,7 +36,8 @@ from pydantic import BaseModel
 from typing import Literal, List, Optional
 from json import loads, dumps
 from contextlib import closing
-from parse import parse
+from re import search
+# from parse import parse
 from fastapi.security.api_key import APIKey, APIKeyHeader
 
 __author__ = 'Ernst-Georg Schmid'
@@ -107,7 +108,8 @@ API_ADDRESS = config['DEFAULT']['APIAddress']
 API_HOST, API_PORT = API_ADDRESS.split(':')
 API_KEY = config['DEFAULT']['APIKey']
 AUTO_HEAL = config['DEFAULT'].getboolean('AutoHeal', False)
-PRE_16_COMPATIBILITY = config['DEFAULT'].getboolean('Pre16Compatibility', False)
+PRE_16_COMPATIBILITY = config['DEFAULT'].getboolean(
+    'Pre16Compatibility', False)
 SSL_KEYFILE = config['DEFAULT'].get('SSLKeyfile')
 SSL_CERTFILE = config['DEFAULT'].get('SSLCertfile')
 
@@ -395,9 +397,9 @@ def get_current_logfile():
             with conn, conn.cursor() as cur:
                 cur.execute(
                     """SELECT current_logfile_path FROM trktr.v_status;""")
-                logfile = cur.fetchone()[0]
+                retval = cur.fetchone()
 
-                return logfile
+                return retval[0]
     except Exception as e:
         logger.error(e)
 
@@ -442,29 +444,48 @@ def find_new_conflicts():
     """Find logical replication conflicts by parsing the logfile and store them in the trktr.history TABLE.
        Already recorded conflicts are skipped to avoid duplicate entries."""
     curr_logfile = get_current_logfile()
+
+    origin_regex = r"pg_\d+"
+    relation_regex = r"\w+\.\w+"
+    finished_at_LSN_regex = r"([0-9A-Fa-f]+)/([0-9A-Fa-f]+)"
+    key_value_regex = r"\(\w+\)=\(\w+\)"
+
     try:
-        with open(curr_logfile, "r") as lf:
+        with open(curr_logfile, mode="r") as lf:
             for line in lf:
                 line = loads(line)
                 # Unique key duplicate in replication
-                if line.get('state_code') == '23505' and line.get('backend_type') == 'logical replication worker':
-                    timestamp = line.get('timestamp')
-                    context = line.get('context')
+                if line.get("state_code") == '23505' and line.get("backend_type") == 'logical replication worker':
+                    timestamp = line.get("timestamp")
+                    context = line.get("context")
+                    # print(context)
                     if context:
-                        data = parse(
-                            "processing remote data for replication origin {} during message type {} for replication target relation {} in transaction {}, finished at {}", context)
-                        origin = data[0]
-                        relation = data[2]
-                        relation = relation.replace('"', '', 2)
-                        lsn = data[4]
+                        # print(context)
+                        origin = search(origin_regex, context)
+                        if origin:
+                            # print("G", origin.group())
+                            origin = origin.group()
+                        relation = search(relation_regex, context)
+                        if relation:
+                            # print("R", relation.group())
+                            relation = relation.group()
+                        lsn = search(finished_at_LSN_regex, context)
+                        if lsn:
+                            # print("L", lsn.groups())
+                            lsn = lsn.group()
                         logger.warning("Relation: %s LSN: %s", relation, lsn)
 
-                        detail = line.get('detail')
+                        detail = line.get("detail")
                         if detail:
-                            data = parse(
-                                "Key ({})=({}) already exists.", detail)
-                            key = data[0]
-                            value = data[1]
+                            detail_data = search(key_value_regex, detail)
+                            if detail_data:
+                                # print("D", detail_data.group())
+                                detail_data = detail_data.group()
+                            key, value = detail_data.split(")=(")
+                            key = key.replace('(', '')
+                            # print(key)
+                            value = value.replace(')', '')
+                            # print(value)
 
                             logger.warning(
                                 "Relation: %s Key: %s Value: %s", relation, key, value)
@@ -473,7 +494,7 @@ def find_new_conflicts():
                                     # Handle the transaction and closing the cursor
                                     with conn, conn.cursor() as cur:
                                         cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
-                                            origin.replace('"', ''), timestamp, lsn, relation, key, value))
+                                            origin, timestamp, lsn, relation, key, value))
 
                             except Exception as e:
                                 logger.error(e)
@@ -689,10 +710,10 @@ async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIK
         cur = conn.cursor()
 
         if (request.method == 'PUT'):
-            #print("PUT")
+            # print("PUT")
             cur.execute("""SELECT current_setting('server_version')::float;""")
             server_version = cur.fetchone()[0]
-            #print(server_version)
+            # print(server_version)
             sub_name = "trktr_sub_{}_{}".format(NODE, control.inbound_node)
             if server_version < 16.0:
                 sql = """CREATE SUBSCRIPTION {} CONNECTION '{}' PUBLICATION trktr_pub_multimaster WITH (copy_data = false, enabled = true, disable_on_error = true);"""
@@ -700,10 +721,10 @@ async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIK
                 sql = """CREATE SUBSCRIPTION {} CONNECTION '{}' PUBLICATION trktr_pub_multimaster WITH (copy_data = false, enabled = true, origin = any, disable_on_error = true);"""
             else:
                 sql = """CREATE SUBSCRIPTION {} CONNECTION '{}' PUBLICATION trktr_pub_multimaster WITH (copy_data = false, enabled = true, origin = none, disable_on_error = true);"""
-            
+
             sql = sql.format(sub_name,
-                                 control.connection_string)
-            #print(sql)
+                             control.connection_string)
+            # print(sql)
             cur.execute(sql)
             return Response(status_code=201)
         elif (request.method == 'DELETE'):
