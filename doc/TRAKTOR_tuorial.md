@@ -12,11 +12,10 @@ postgresql.conf must contain the following settings:
 
 ```
 wal_level=logical
-log_destination = 'jsonlog'
+log_destination = 'jsonlog' # You can add others, but jsonlog has to be available
 logging_collector = on
 log_file_mode = 0640
-log_min_messages = info
-lc_messages = 'C'
+log_min_messages = error # At least error is required
 ```
 
 ### Addressing the database servers
@@ -68,7 +67,9 @@ Connect to each new database and create a schema:
 Create the replication user:
 
 Unfortunately, PostgreSQL < 16.x requires SUPERUSER privilege in order to create logical replication subscriptions.
-Since 16.x, this is not required anymore. According to the [documentation](https://www.postgresql.org/docs/16/logical-replication-security.html), membership in pg_create_subscription is sufficient, but SUPERUSER will still work. So for the sake of simplicity, you might just continue with SUPERUSER.
+Since 16.x, this is not required anymore. According to the [documentation](https://www.postgresql.org/docs/16/logical-replication-security.html), membership in pg_create_subscription is sufficient, but SUPERUSER will still work.
+
+**So for the sake of simplicity, you might just continue with SUPERUSER.**
 
 before 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
 
