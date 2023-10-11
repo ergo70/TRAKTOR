@@ -473,8 +473,6 @@ def find_new_conflicts():
                         if lsn:
                             # print("L", lsn.groups())
                             lsn = lsn.group()
-                        logger.warning("Relation: %s LSN: %s", relation, lsn)
-
                         detail = line.get("detail")
                         if detail:
                             detail_data = search(key_value_regex, detail)
@@ -487,17 +485,20 @@ def find_new_conflicts():
                             value = value.replace(')', '')
                             # print(value)
 
-                            logger.warning(
-                                "Relation: %s Key: %s Value: %s", relation, key, value)
-                            try:
-                                with closing(psycopg2.connect(CONN_STR)) as conn:
-                                    # Handle the transaction and closing the cursor
-                                    with conn, conn.cursor() as cur:
-                                        cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
-                                            origin, timestamp, lsn, relation, key, value))
-
-                            except Exception as e:
-                                logger.error(e)
+                            if (origin and timestamp and lsn and relation and key and value):
+                                try:
+                                    with closing(psycopg2.connect(CONN_STR)) as conn:
+                                        # Handle the transaction and closing the cursor
+                                        with conn, conn.cursor() as cur:
+                                            cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
+                                                origin, timestamp, lsn, relation, key, value))
+                                            logger.INFO(
+                                                "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
+                                except Exception as e:
+                                    logger.error(e)
+                            else:
+                                logger.error(
+                                    "Failed to parse CONTEXT: %s", context)
     except Exception as ex:
         logger.error(ex)
 
