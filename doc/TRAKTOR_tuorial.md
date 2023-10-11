@@ -393,7 +393,7 @@ And that's it. A fully functional three node multimaster replicating cluster wit
 ## Automatic conflict resolution
 
 In case of conflicting keys in replicated TABLEs, PostgreSQL will stop the replication.
-Usually, this has to be fixed manually, e.g. as described [here](https://www.postgresql.fastware.com/blog/addressing-replication-conflicts-using-alter-subscription-skip). TRAKTOR can do this atomatically if `AutoHeal` is activated. Normally, such conflicts are rare, but can occur if the cluster experienced a split-brain situation, i.e. not all nodes could communicate with each other due to network issues.
+Usually, this has to be fixed manually, e.g. as described [here](https://www.postgresql.fastware.com/blog/addressing-replication-conflicts-using-alter-subscription-skip). TRAKTOR can do this automatically if `AutoHeal` is activated. Normally, such conflicts are rare, but can occur if the cluster experienced a split-brain situation, i.e. not all nodes could communicate with each other due to network issues.
 
 Let's try:
 
