@@ -453,6 +453,12 @@ def find_new_conflicts():
     try:
         with open(curr_logfile, mode="r") as lf:
             for line in lf:
+                context = None
+                origin = None
+                relation = None
+                lsn = None
+                key = None
+                value = None
                 line = loads(line)
                 # Unique key duplicate in replication
                 if line.get("state_code") == '23505' and line.get("backend_type") == 'logical replication worker':
@@ -461,44 +467,43 @@ def find_new_conflicts():
                     # print(context)
                     if context:
                         # print(context)
-                        origin = search(origin_regex, context)
-                        if origin:
+                        origin_match = search(origin_regex, context)
+                        if origin_match:
                             # print("G", origin.group())
-                            origin = origin.group()
-                        relation = search(relation_regex, context)
-                        if relation:
+                            origin = origin_match.group()
+                        relation_match = search(relation_regex, context)
+                        if relation_match:
                             # print("R", relation.group())
-                            relation = relation.group()
-                        lsn = search(finished_at_LSN_regex, context)
-                        if lsn:
+                            relation = relation_match.group()
+                        lsn_match = search(finished_at_LSN_regex, context)
+                        if lsn_match:
                             # print("L", lsn.groups())
                             lsn = lsn.group()
                         detail = line.get("detail")
                         if detail:
-                            detail_data = search(key_value_regex, detail)
-                            if detail_data:
+                            detail_match = search(key_value_regex, detail)
+                            if detail_match:
                                 # print("D", detail_data.group())
-                                detail_data = detail_data.group()
-                            key, value = detail_data.split(")=(")
-                            key = key.replace('(', '')
-                            # print(key)
-                            value = value.replace(')', '')
-                            # print(value)
+                                key, value = detail_match.group().split(")=(")
+                                key = key.replace('(', '')
+                                # print(key)
+                                value = value.replace(')', '')
+                                # print(value)
 
-                            if (origin and timestamp and lsn and relation and key and value):
-                                try:
-                                    with closing(psycopg2.connect(CONN_STR)) as conn:
-                                        # Handle the transaction and closing the cursor
-                                        with conn, conn.cursor() as cur:
-                                            cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
-                                                origin, timestamp, lsn, relation, key, value))
-                                            logger.INFO(
-                                                "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
-                                except Exception as e:
-                                    logger.error(e)
-                            else:
-                                logger.error(
-                                    "Failed to parse CONTEXT: %s", context)
+                        if (origin and timestamp and lsn and relation and key and value):
+                            try:
+                                with closing(psycopg2.connect(CONN_STR)) as conn:
+                                    # Handle the transaction and closing the cursor
+                                    with conn, conn.cursor() as cur:
+                                        cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
+                                            origin, timestamp, lsn, relation, key, value))
+                                        logger.INFO(
+                                            "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
+                            except Exception as e:
+                                logger.error(e)
+                        else:
+                            logger.error(
+                                "Failed to parse CONTEXT: %s", context)
     except Exception as ex:
         logger.error(ex)
 
