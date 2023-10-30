@@ -327,7 +327,7 @@ class ResolutionHistory(BaseStatus):
 
 
 app = FastAPI(title="Traktor Arbiter API",
-              description="Traktor Arbiter node control API", version="1.0.0", redoc_url=None)
+              description="Traktor Arbiter node control API", version=__version__, redoc_url=None)
 
 
 # def custom_hook(args):
@@ -599,6 +599,16 @@ def sub_watcher_thread_function():
                     current_subs[subkey][0].set()
                     current_subs[subkey][2].join()
                     del current_subs[subkey]
+
+	    for subkey in current_subs.keys():
+                if not current_subs[subkey][2].is_alive():
+                    # print("RESTART failed subscription watcher threads")
+                    current_subs[subkey][2].join()
+                    cf = threading.Thread(
+                        target=refresher_thread_function, args=(current_subs[subkey][0], subkey, current_subs[subkey][1]))
+                    cf.start()
+                    current_subs[subkey] = (
+                        current_subs[subkey][0], current_subs[subkey][1], cf)
         except Exception as e:
             logger.error(e)
 
