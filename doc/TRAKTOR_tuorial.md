@@ -1,6 +1,6 @@
 # TRAKTOR Tutorial
 TRAKTOR is a true multimaster replication solution for vanilla PostgreSQL on top of logical replication, implemented as a shared-nothing architecture.
-It has been tested with 15.x and 16.x.
+It has been tested with 15.x and 16.x on a Windows laptop. Support for RDS and Aurora on AWS is ongoing, but this tutorial assumes using file_fdw, not log_fdw.
 In this tutorial, you will initially setup a two node cluster and then extend it to three nodes.
 
 ## Preparing PostgreSQL
@@ -11,10 +11,9 @@ TRAKTOR uses the logical replication feature of PostgreSQL for true multimaster 
 postgresql.conf must contain the following settings:
 
 ```
-wal_level=logical
-log_destination = 'jsonlog' # You can add others, but jsonlog has to be available
+wal_level = logical
+log_destination = 'csvlog' # You can add others, but jsonlog has to be available
 logging_collector = on
-log_file_mode = 0640
 log_min_messages = error # At least error is required
 ```
 
@@ -49,7 +48,7 @@ ConnectionString = # The PostgreSQL [keyword/value connection string](https://ww
 APIAddress = 127.0.0.1:8080 # The API Endpoint
 CheckInterval = 10 # How often to check for conflicts, in Seconds
 APIKey =  # The secret API Key
-AutoHeal = True # Enable automatic conflict resolution
+LSNResolver = file_fdw # Enable automatic conflict resolution with either file_fdw or log_fdw
 Pre16Compatibility = False # If you run 16.x server mixed in a cluster with pre-16.x servers, this must be True, since < 16.x uses a different cycle resolution method, and >= 16.x has to emulate this
 ```
 
@@ -269,7 +268,8 @@ since 16.x:
 CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
 GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
 GRANT pg_create_subscription TO traktor_arbiter;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO traktor_arbiter;
+GRANT pg_read_server_files TO traktor_arbiter;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_logdir() TO traktor_arbiter;
 GRANT SELECT ON pg_subscription TO traktor_arbiter;
 ```
 
