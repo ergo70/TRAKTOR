@@ -34,17 +34,16 @@ import select
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, Security
 from pydantic import BaseModel
 from typing import Literal, List, Optional
-from json import loads, dumps
+from json import dumps
 from contextlib import closing
 from re import search
-# from parse import parse
 from fastapi.security.api_key import APIKey, APIKeyHeader
 
 __author__ = 'Ernst-Georg Schmid'
 __copyright__ = 'Copyright 2023, TRAKTOR'
 __credits__ = ['Ernst-Georg Schmid', 'Aimless']
 __license__ = 'MIT'
-__version__ = '1.0.0'
+__version__ = '1.5.0'
 __maintainer__ = 'Ernst-Georg Schmid'
 __email__ = 'pgchem@tuschehund.de'
 __status__ = 'EXPERIMENTAL'
@@ -100,18 +99,19 @@ tags_metadata = [
 config = configparser.ConfigParser()
 config.read('arbiter.ini')
 
-LISTEN_TIMEOUT = 1
+LISTEN_TIMEOUT = 60
 CHECK_INTERVAL = config['DEFAULT'].getint('CheckInterval', 10)
 NODE = config['DEFAULT'].getint('NodeID')
 CONN_STR = config['DEFAULT']['ConnectionString']
 API_ADDRESS = config['DEFAULT']['APIAddress']
 API_HOST, API_PORT = API_ADDRESS.split(':')
 API_KEY = config['DEFAULT']['APIKey']
-AUTO_HEAL = config['DEFAULT'].getboolean('AutoHeal', False)
+LSN_RESOLVER = config['DEFAULT'].get('LSNResolver', 'none').lower()
 PRE_16_COMPATIBILITY = config['DEFAULT'].getboolean(
     'Pre16Compatibility', False)
 SSL_KEYFILE = config['DEFAULT'].get('SSLKeyfile')
 SSL_CERTFILE = config['DEFAULT'].get('SSLCertfile')
+USE_LOGFILE = True
 
 COMMON_PATH_V1 = "/v1/arbiter"
 
@@ -144,7 +144,6 @@ PUBLICATIONS = """DO $$ BEGIN IF NOT EXISTS (SELECT true FROM pg_publication WHE
 
 VIEWS = """CREATE OR REPLACE VIEW trktr.v_status
  AS SELECT {} as node_id,
- (SELECT setting || '/' || pg_current_logfile('jsonlog') FROM pg_settings WHERE name ='data_directory') as current_logfile_path,
  not exists ((SELECT true FROM pg_subscription WHERE not subenabled AND subname like 'trktr_sub_{}_%' limit 1)) as replicating,
  exists ((SELECT true FROM trktr.history limit 1)) as tainted,
  (select count(*) from trktr.history where resolved is not null) as auto_resolved,
@@ -202,7 +201,7 @@ begin
             execute 'alter table ' || fqt || ' enable always trigger ' || trg;
         end if;
         execute 'alter publication trktr_pub_multimaster add table ' || fqt;
-        perform pg_notify('repchanged', NULL);
+        perform pg_notify('trktr_repchanged', NULL);
 end;
 $$;
 create or replace procedure trktr.trktr_remove_table_from_replica(table_schema text, table_name text)
@@ -221,7 +220,7 @@ begin
 	        execute 'drop trigger ' || trg || ' on ' || fqt;
 		    execute 'alter table ' || fqt || ' drop column if exists origin, drop column if exists is_local';
         end if;
-        perform pg_notify('repchanged', NULL);
+        perform pg_notify('trktr_repchanged', NULL);
 end;
 $$;
 create or replace procedure trktr.trktr_add_table_to_replicaset(table_schema text, table_name text)
@@ -281,7 +280,112 @@ where
 	 loop
 		call trktr.trktr_remove_table_from_replica(r.schema_name, r.table_name);
 		end loop;
- perform pg_notify('repchanged', NULL);
+ perform pg_notify('trktr_repchanged', NULL);
+end;
+$$;
+CREATE OR REPLACE FUNCTION trktr.trktr_find_unresolved_conflicts(fdw text DEFAULT 'file_fdw'::text)
+ RETURNS TABLE(log_time timestamp with time zone, context text, detail text)
+ LANGUAGE plpgsql
+ STRICT
+AS $$
+declare
+r record;
+i int := 0;
+n int := 0;
+fn text;
+tn text;
+enc text := 'latin1';
+begin
+	if (version() ilike '%linux%') then
+		enc := 'utf8';
+	end if;
+        if fdw = 'log_fdw' then
+                create extension if not exists log_fdw;
+                CREATE SERVER if not exists trktr_log_server FOREIGN DATA WRAPPER log_fdw;
+                n := count(*) FROM list_postgres_log_files() where file_name LIKE 'postgresql%csv' limit 2;
+               	if n = 0 then
+               		raise exception 'No logfiles found' using hint = 'Does log_destination contain csvlog?';
+               	end if;
+                for r in SELECT file_name FROM list_postgres_log_files() where file_name LIKE 'postgresql%csv' ORDER BY 1 desc limit 2 loop
+                        tn := 'trktr.pg_log_' || i;
+                        SELECT create_foreign_table_for_log_file(tn, 'trktr_log_server', r.file_name);
+                        i := i + 1;
+                end loop;
+        elseif fdw = 'file_fdw' then
+                create extension if not exists file_fdw;
+                CREATE SERVER if not exists trktr_log_server FOREIGN DATA WRAPPER file_fdw;
+                n := count(*) FROM pg_ls_logdir() where "name" LIKE 'postgresql%.csv' limit 2;
+               	if n = 0 then
+               		raise exception 'No logfiles found' using hint = 'Does log_destination contain csvlog?';
+               	end if;
+                for r in SELECT "name" as file_name FROM pg_ls_logdir() where "name" LIKE 'postgresql%.csv' ORDER BY 1 desc limit 2 loop
+                        fn := current_setting('log_directory')  || '/' || r.file_name;
+                        tn := 'trktr.pg_log_' || i;
+                        execute 'CREATE FOREIGN TABLE ' || tn ||
+                        ' (
+                        log_time timestamp(3) with time zone,
+                        user_name text,
+                        database_name text,
+                        process_id integer,
+                        connection_from text,
+                        session_id text,
+                        session_line_num bigint,
+                        command_tag text,
+                        session_start_time timestamp with time zone,
+                        virtual_transaction_id text,
+                        transaction_id bigint,
+                        error_severity text,
+                        sql_state_code text,
+                        message text,
+                        detail text,
+                        hint text,
+                        internal_query text,
+                        internal_query_pos integer,
+                        context text,
+                        query text,
+                        query_pos integer,
+                        "location" text,
+                        application_name text,
+                        backend_type text,
+                        leader_pid integer,
+                        query_id bigint
+                        )
+                        SERVER trktr_log_server OPTIONS (filename ''' || fn || ''', format ''csv'', encoding ''' || enc || ''')';
+                        i := i + 1;
+                end loop;
+        else
+                raise exception 'FDW type % is not supported', fdw using hint = 'file_fdw or log_fdw';
+        end if;
+       if n > 1 then
+return query
+select
+		l.log_time,
+        l.context,
+        l.detail
+from
+        trktr.pg_log_0 l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
+union
+select
+        l.log_time,
+        l.context,
+        l.detail
+from
+        trktr.pg_log_1 l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
+order by
+        log_time desc;
+else
+return query
+select
+		l.log_time,
+        l.context,
+        l.detail
+from
+        trktr.pg_log_0 l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
+order by
+        log_time desc;
+end if;       
+drop foreign table if exists trktr.pg_log_0;
+drop foreign table if exists trktr.pg_log_1;
 end;
 $$;""".format(NODE)
 
@@ -367,7 +471,7 @@ def setup_db_objects():
             logger.debug("Functions")
             cur.execute(PUBLICATIONS)
             logger.debug("Publications")
-            cur.execute("LISTEN repchanged;")
+            cur.execute("LISTEN trktr_repchanged;")
             logger.debug("Repchanged")
             logger.info("Node created")
 
@@ -440,31 +544,27 @@ def enable_subscription(sub):
         logger.error(e)
 
 
-def find_new_conflicts():
-    """Find logical replication conflicts by parsing the logfile and store them in the trktr.history TABLE.
-       Already recorded conflicts are skipped to avoid duplicate entries."""
-    curr_logfile = get_current_logfile()
-
+def find_new_conflicts_fdw():
     origin_regex = r"pg_\d+"
     relation_regex = r"\w+\.\w+"
     finished_at_LSN_regex = r"([0-9A-Fa-f]+)/([0-9A-Fa-f]+)"
     key_value_regex = r"\(\w+\)=\(\w+\)"
 
     try:
-        with open(curr_logfile, mode="r") as lf:
-            for line in lf:
-                context = None
-                origin = None
-                relation = None
-                lsn = None
-                key = None
-                value = None
-                line = loads(line)
-                # Unique key duplicate in replication
-                if line.get("state_code") == '23505' and line.get("backend_type") == 'logical replication worker':
-                    timestamp = line.get("timestamp")
-                    context = line.get("context")
-                    # print(context)
+        with closing(psycopg2.connect(CONN_STR)) as conn:
+            # Handle the transaction and closing the cursor
+            with conn, conn.cursor() as select_cur, conn.cursor as insert_cur:
+                select_cur.execute(
+                    """select log_time, context, detail from trktr.trktr_find_unresolved_conflicts('{}');""".format(LSN_RESOLVER))
+                for line in select_cur:
+                    timestamp = line[0]
+                    context = line[1]
+                    detail = line[2]
+                    origin = None
+                    relation = None
+                    lsn = None
+                    key = None
+                    value = None
                     if context:
                         # print(context)
                         origin_match = search(origin_regex, context)
@@ -479,7 +579,6 @@ def find_new_conflicts():
                         if lsn_match:
                             # print("L", lsn.groups())
                             lsn = lsn_match.group()
-                        detail = line.get("detail")
                         if detail:
                             detail_match = search(key_value_regex, detail)
                             if detail_match:
@@ -491,16 +590,10 @@ def find_new_conflicts():
                                 # print(value)
 
                         if (origin and timestamp and lsn and relation and key and value):
-                            try:
-                                with closing(psycopg2.connect(CONN_STR)) as conn:
-                                    # Handle the transaction and closing the cursor
-                                    with conn, conn.cursor() as cur:
-                                        cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
-                                            origin, timestamp, lsn, relation, key, value))
-                                        logger.info(
-                                            "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
-                            except Exception as e:
-                                logger.error(e)
+                            insert_cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
+                                origin, timestamp, lsn, relation, key, value))
+                            logger.info(
+                                "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
                         else:
                             logger.error(
                                 "Failed to parse CONTEXT: %s", context)
@@ -540,7 +633,7 @@ def resolver_thread_function():
 
         if subs:
             print(subs)
-            find_new_conflicts()
+            find_new_conflicts_fdw()
 
         resolve_conflicts()
 
@@ -600,9 +693,9 @@ def sub_watcher_thread_function():
                     current_subs[subkey][2].join()
                     del current_subs[subkey]
 
-	    for subkey in current_subs.keys():
+            for subkey in current_subs.keys():
                 if not current_subs[subkey][2].is_alive():
-                    # print("RESTART failed subscription watcher threads")
+                    # print("RESTART failed threads")
                     current_subs[subkey][2].join()
                     cf = threading.Thread(
                         target=refresher_thread_function, args=(current_subs[subkey][0], subkey, current_subs[subkey][1]))
@@ -622,8 +715,8 @@ def refresher_thread_function(evt, sub, peer_conn_str):
         peer_conn.autocommit = True
         conn = psycopg2.connect(CONN_STR)
         conn.autocommit = True
-        with peer_conn.cursor() as cur:
-            cur.execute("LISTEN repchanged;")
+        with peer_conn.cursor() as listen_cur:
+            listen_cur.execute("LISTEN trktr_repchanged;")
             while threading.main_thread().is_alive() and (not evt.is_set()):
                 logger.info("Refresher %s", sub)
                 if select.select([peer_conn], [], [], LISTEN_TIMEOUT) == ([], [], []):
@@ -631,15 +724,15 @@ def refresher_thread_function(evt, sub, peer_conn_str):
                 else:
                     peer_conn.poll()
                     logger.info("Got something")
-                    cur2 = conn.cursor()
+                    alter_cur = conn.cursor()
                     for notify in peer_conn.notifies:
                         logger.info("Got NOTIFY: %s, %s, %s", notify.pid,
                                     notify.channel, notify.payload)
-                        if (notify.channel == 'repchanged'):
+                        if (notify.channel == 'trktr_repchanged'):
                             # Handle the transaction and closing the cursor
-                            cur2.execute(
+                            alter_cur.execute(
                                 'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub))
-                    cur2.close()
+                    alter_cur.close()
                     peer_conn.notifies.clear()
     except Exception as e:
         logger.error(e)
@@ -799,7 +892,7 @@ async def repset_table(table: str, request: Request, api_key: APIKey = Depends(a
 
 if __name__ == "__main__":
     """Start all houskeeping threads and serve the API."""
-    if AUTO_HEAL:
+    if LSN_RESOLVER in ('file_fdw', 'log_fdw'):
         ct = threading.Thread(target=resolver_thread_function, args=())
         ct.start()
 
