@@ -290,10 +290,7 @@ CREATE OR REPLACE FUNCTION trktr.trktr_find_unresolved_conflicts(fdw text DEFAUL
 AS $$
 declare
 r record;
-i int := 0;
-n int := 0;
 fn text;
-tn text;
 enc text := 'latin1';
 begin
 	if (version() ilike '%linux%') then
@@ -302,27 +299,16 @@ begin
         if fdw = 'log_fdw' then
                 create extension if not exists log_fdw;
                 CREATE SERVER if not exists trktr_log_server FOREIGN DATA WRAPPER log_fdw;
-                n := count(*) FROM list_postgres_log_files() where file_name LIKE 'postgresql%csv' limit 2;
-               	if n = 0 then
-               		raise exception 'No logfiles found' using hint = 'Does log_destination contain csvlog?';
-               	end if;
-                for r in SELECT file_name FROM list_postgres_log_files() where file_name LIKE 'postgresql%csv' ORDER BY 1 desc limit 2 loop
-                        tn := 'trktr.pg_log_' || i;
-                        SELECT create_foreign_table_for_log_file(tn, 'trktr_log_server', r.file_name);
-                        i := i + 1;
+                for r in SELECT file_name FROM list_postgres_log_files() where file_name LIKE 'postgresql%csv' ORDER BY 1 desc limit 1 loop
+                        SELECT create_foreign_table_for_log_file('trktr.pg_log', 'trktr_log_server', r.file_name);
                 end loop;
         elseif fdw = 'file_fdw' then
                 create extension if not exists file_fdw;
                 CREATE SERVER if not exists trktr_log_server FOREIGN DATA WRAPPER file_fdw;
-                n := count(*) FROM pg_ls_logdir() where "name" LIKE 'postgresql%.csv' limit 2;
-               	if n = 0 then
-               		raise exception 'No logfiles found' using hint = 'Does log_destination contain csvlog?';
-               	end if;
-                for r in SELECT "name" as file_name FROM pg_ls_logdir() where "name" LIKE 'postgresql%.csv' ORDER BY 1 desc limit 2 loop
+                for r in SELECT "name" as file_name FROM pg_ls_logdir() where "name" LIKE 'postgresql%.csv' ORDER BY 1 desc limit 1 loop
                         fn := current_setting('log_directory')  || '/' || r.file_name;
-                        tn := 'trktr.pg_log_' || i;
-                        execute 'CREATE FOREIGN TABLE ' || tn ||
-                        ' (
+                        execute 'CREATE FOREIGN TABLE trktr.pg_log 
+                        (
                         log_time timestamp(3) with time zone,
                         user_name text,
                         database_name text,
@@ -351,43 +337,22 @@ begin
                         query_id bigint
                         )
                         SERVER trktr_log_server OPTIONS (filename ''' || fn || ''', format ''csv'', encoding ''' || enc || ''')';
-                        i := i + 1;
                 end loop;
         else
                 raise exception 'FDW type % is not supported', fdw using hint = 'file_fdw or log_fdw';
         end if;
-       if n > 1 then
 return query
 select
 		l.log_time,
         l.context,
         l.detail
 from
-        trktr.pg_log_0 l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
-union
-select
-        l.log_time,
-        l.context,
-        l.detail
-from
-        trktr.pg_log_1 l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
+        trktr.pg_log l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
 order by
-        log_time desc;
-else
-return query
-select
-		l.log_time,
-        l.context,
-        l.detail
-from
-        trktr.pg_log_0 l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
-order by
-        log_time desc;
-end if;       
-drop foreign table if exists trktr.pg_log_0;
-drop foreign table if exists trktr.pg_log_1;
-end;
-$$;""".format(NODE)
+        log_time desc;      
+drop foreign table if exists trktr.pg_log;
+end;$$;
+""".format(NODE)
 
 
 class SubscriptionControl(BaseModel):
