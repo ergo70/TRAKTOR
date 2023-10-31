@@ -12,7 +12,7 @@ postgresql.conf must contain the following settings:
 
 ```
 wal_level = logical
-log_destination = 'csvlog' # You can add others, but jsonlog has to be available
+log_destination = 'csvlog' # You can add others, but csvlog has to be available
 logging_collector = on
 log_min_messages = error # At least error is required
 ```
