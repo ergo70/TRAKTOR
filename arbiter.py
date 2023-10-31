@@ -111,7 +111,6 @@ PRE_16_COMPATIBILITY = config['DEFAULT'].getboolean(
     'Pre16Compatibility', False)
 SSL_KEYFILE = config['DEFAULT'].get('SSLKeyfile')
 SSL_CERTFILE = config['DEFAULT'].get('SSLCertfile')
-USE_LOGFILE = True
 
 COMMON_PATH_V1 = "/v1/arbiter"
 
@@ -291,10 +290,10 @@ AS $$
 declare
 r record;
 fn text;
-enc text := 'latin1';
+enc text := 'utf8';
 begin
-	if (version() ilike '%linux%') then
-		enc := 'utf8';
+	if version() ilike any (array['%Windows%', '%mingw%', '%Visual%']) then
+		enc := 'latin1';
 	end if;
         if fdw = 'log_fdw' then
                 create extension if not exists log_fdw;
