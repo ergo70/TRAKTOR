@@ -277,7 +277,7 @@ where
 	 loop
 		call trktr.trktr_remove_table_from_replica(r.schema_name, r.table_name);
 		end loop;
- perform pg_notify('trktr_pubchanged', NULL);
+ perform pg_notify('trktr_event', 'trktr_evt_pubchanged');
 end;
 $$;
 CREATE OR REPLACE FUNCTION trktr.trktr_find_unresolved_conflicts(fdw text DEFAULT 'file_fdw'::text)
@@ -690,9 +690,9 @@ def refresher_thread_function(evt, sub, peer_conn_str):
                     for notify in peer_conn.notifies:
                         logger.info("Got NOTIFY: %s, %s, %s", notify.pid,
                                     notify.channel, notify.payload)
-                        if (notify.channel == 'trktr_pubchanged'):
-                            # Handle the transaction and closing the cursor
-                            alter_cur.execute(
+                        if notify.channel == 'trktr_event':
+                            if notify.payload == 'trktr_evt_pubchanged':
+                                alter_cur.execute(
                                 'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub))
                     alter_cur.close()
                     peer_conn.notifies.clear()
