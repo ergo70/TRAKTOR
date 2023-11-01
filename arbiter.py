@@ -200,7 +200,6 @@ begin
             execute 'alter table ' || fqt || ' enable always trigger ' || trg;
         end if;
         execute 'alter publication trktr_pub_multimaster add table ' || fqt;
-        perform pg_notify('trktr_pubchanged', NULL);
 end;
 $$;
 create or replace procedure trktr.trktr_remove_table_from_replica(table_schema text, table_name text)
@@ -219,7 +218,6 @@ begin
 	        execute 'drop trigger ' || trg || ' on ' || fqt;
 		    execute 'alter table ' || fqt || ' drop column if exists origin, drop column if exists is_local';
         end if;
-        perform pg_notify('trktr_pubchanged', NULL);
 end;
 $$;
 create or replace procedure trktr.trktr_add_table_to_replicaset(table_schema text, table_name text)
