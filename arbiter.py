@@ -200,7 +200,7 @@ begin
             execute 'alter table ' || fqt || ' enable always trigger ' || trg;
         end if;
         execute 'alter publication trktr_pub_multimaster add table ' || fqt;
-        perform pg_notify('trktr_repchanged', NULL);
+        perform pg_notify('trktr_pubchanged', NULL);
 end;
 $$;
 create or replace procedure trktr.trktr_remove_table_from_replica(table_schema text, table_name text)
@@ -219,7 +219,7 @@ begin
 	        execute 'drop trigger ' || trg || ' on ' || fqt;
 		    execute 'alter table ' || fqt || ' drop column if exists origin, drop column if exists is_local';
         end if;
-        perform pg_notify('trktr_repchanged', NULL);
+        perform pg_notify('trktr_pubchanged', NULL);
 end;
 $$;
 create or replace procedure trktr.trktr_add_table_to_replicaset(table_schema text, table_name text)
@@ -279,7 +279,7 @@ where
 	 loop
 		call trktr.trktr_remove_table_from_replica(r.schema_name, r.table_name);
 		end loop;
- perform pg_notify('trktr_repchanged', NULL);
+ perform pg_notify('trktr_pubchanged', NULL);
 end;
 $$;
 CREATE OR REPLACE FUNCTION trktr.trktr_find_unresolved_conflicts(fdw text DEFAULT 'file_fdw'::text)
@@ -435,7 +435,7 @@ def setup_db_objects():
             logger.debug("Functions")
             cur.execute(PUBLICATIONS)
             logger.debug("Publications")
-            cur.execute("LISTEN trktr_repchanged;")
+            cur.execute("LISTEN trktr_pubchanged;")
             logger.debug("Repchanged")
             logger.info("Node created")
 
@@ -680,7 +680,7 @@ def refresher_thread_function(evt, sub, peer_conn_str):
         conn = psycopg2.connect(CONN_STR)
         conn.autocommit = True
         with peer_conn.cursor() as listen_cur:
-            listen_cur.execute("LISTEN trktr_repchanged;")
+            listen_cur.execute("LISTEN trktr_pubchanged;")
             while threading.main_thread().is_alive() and (not evt.is_set()):
                 logger.info("Refresher %s", sub)
                 if select.select([peer_conn], [], [], LISTEN_TIMEOUT) == ([], [], []):
@@ -692,7 +692,7 @@ def refresher_thread_function(evt, sub, peer_conn_str):
                     for notify in peer_conn.notifies:
                         logger.info("Got NOTIFY: %s, %s, %s", notify.pid,
                                     notify.channel, notify.payload)
-                        if (notify.channel == 'trktr_repchanged'):
+                        if (notify.channel == 'trktr_pubchanged'):
                             # Handle the transaction and closing the cursor
                             alter_cur.execute(
                                 'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub))
