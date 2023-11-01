@@ -433,8 +433,8 @@ def setup_db_objects():
             logger.debug("Functions")
             cur.execute(PUBLICATIONS)
             logger.debug("Publications")
-            cur.execute("LISTEN trktr_pubchanged;")
-            logger.debug("Repchanged")
+            cur.execute("LISTEN trktr_event;")
+            logger.debug("trktr_event")
             logger.info("Node created")
 
 
@@ -678,7 +678,7 @@ def refresher_thread_function(evt, sub, peer_conn_str):
         conn = psycopg2.connect(CONN_STR)
         conn.autocommit = True
         with peer_conn.cursor() as listen_cur:
-            listen_cur.execute("LISTEN trktr_pubchanged;")
+            listen_cur.execute("LISTEN trktr_event;")
             while threading.main_thread().is_alive() and (not evt.is_set()):
                 logger.info("Refresher %s", sub)
                 if select.select([peer_conn], [], [], LISTEN_TIMEOUT) == ([], [], []):
