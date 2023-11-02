@@ -393,7 +393,7 @@ And that's it. A fully functional three node multimaster replicating cluster wit
 ## Automatic conflict resolution
 
 In case of conflicting keys in replicated TABLEs, PostgreSQL will stop the replication.
-Usually, this has to be fixed manually, e.g. as described [here](https://www.postgresql.fastware.com/blog/addressing-replication-conflicts-using-alter-subscription-skip). TRAKTOR can do this automatically if `AutoHeal` is activated. Normally, such conflicts are rare, but can occur if the cluster experienced a split-brain situation, i.e. not all nodes could communicate with each other due to network issues.
+Usually, this has to be fixed manually, e.g. as described [here](https://www.postgresql.fastware.com/blog/addressing-replication-conflicts-using-alter-subscription-skip). TRAKTOR can do this automatically if `AutoHeal` is activated. Normally, such conflicts are rare, but can occur if the cluster experienced a split-brain situation, i.e. not all nodes could communicate with each other due to network issues. Resolution by skipping LSN is a "Local Write Wins" strategy.
 
 Let's try:
 
@@ -416,3 +416,40 @@ trktr.history on each node now will contain a row like this:
 Cool, ain't it?
 
 Since the necessary information has to be parsed out of the PostgreSQL server logfile, TRAKTOR uses a language agnostic parser. It should work with all languages, but only English and German have been tested.
+
+### Removing tables from the Replicaset
+
+```
+curl --location --request DELETE 'http://localhost:8080/v1/arbiter/replicaset/multimaster.reptest' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+
+```
+curl --location --request DELETE 'http://localhost:8081/v1/arbiter/replicaset/multimaster.reptest' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+
+```
+curl --location --request DELETE 'http://localhost:8082/v1/arbiter/replicaset/multimaster.reptest' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+```
+curl --location --request PATCH 'http://localhost:8080/v1/arbiter/replicaset' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+```
+curl --location --request PATCH 'http://localhost:8081/v1/arbiter/replicaset' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+```
+curl --location --request PATCH 'http://localhost:8082/v1/arbiter/replicaset' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+
+The table multimaster.reptest is now removed from replication. You can INSERT the same key on all nodes without collision.
