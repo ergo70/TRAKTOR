@@ -452,4 +452,101 @@ curl --location --request PATCH 'http://localhost:8082/v1/arbiter/replicaset' \
 ```
 200 OK
 
-The table multimaster.reptest is now removed from replication. You can INSERT the same key on all nodes without collision.
+The table multimaster.reptest is now removed from replication. You can INSERT the same key on all nodes without collision or DROP the tables now.
+
+## Monitoring TRAKTOR nodes
+
+Every TRAKTOR arbiter node has three API calls to monitor its status. To see the status of the node itself, call
+```
+curl --location 'http://localhost:8080/v1/arbiter/status' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+
+```
+{
+    "node": 0,
+    "replicating": true,
+    "tainted": true,
+    "auto_resolved": 1,
+    "replication_lag_ms": 0.139,
+    "server_version": 16.0,
+    "pre_16_compatibility": false
+}
+```
+
+The meaning of those fields is a follows:
+
+1. node: The Node ID
+1. replicating: Is the Node currently replicating ok, i.e. there are no failed SUBSCRIPTIONs
+1. tainted: If the LSN Resolver has fixed a conflict, the mutual data of the TRAKTOR cluster could be in an inconsistent state. This node is tainted
+1. auto_resolved: How many conflicts were auto resolved since the initialization of the TRAKTOR cluster
+1. replication_lag_ms: The current [replication lag](https://www.percona.com/blog/replication-lag-in-postgresql) in milliseconds
+1. server_version: The PostgreSQL version number
+1. pre_16_compatiblity: Is the compatibility mode for PostgreSQL &lt; 16.x activated
+
+To see the status of the node replicaset, call
+```
+curl --location 'http://localhost:8080/v1/arbiter/replicaset/status' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+If you have removed the tables in the previous step, you will see:
+```
+{
+    "node": 0,
+    "replicaset": []
+}
+```
+The replicaset is empty, otherwise you should see:
+```
+{
+    "node": 0,
+    "replicaset": [
+        {
+            "relation": "multimaster.reptest",
+            "status": "active"
+        }
+    ]
+}
+```
+The replicaset on Node 0 contains one TABLE, multimaster.reptest, which is currently in active replication. 
+
+If the cluster is tainted and auto_resolved is > 0, you might want to see the resolution history to see which data might be inconsistent. Call:
+```
+curl --location 'http://localhost:8080/v1/arbiter/resolution/history' \
+--header 'X-API-KEY: LetMeIn'
+```
+200 OK
+```
+{
+    "node": 0,
+    "resolutions": [
+        {
+            "occurred": "2023-11-03T22:32:15.509",
+            "lsn": "0/3AED440",
+            "relation": "multimaster.reptest",
+            "sql_state_code": "23505",
+            "resolved": "2023-11-03T22:43:28.841261",
+            "subscription": "trktr_sub_0_1",
+            "reason": "Key (id)=(3) already exists."
+        }
+    ]
+}
+```
+
+1. node: The Node ID
+1. resolutions: An array of resolution objects, or empty
+
+Every Resolution object shows:
+
+1. occurred: The timestamp of conflict detection
+1. lsn: The logical sequence number of the conflict
+1. relation: The relation involved in the conflict
+1. sql_state_code: The [SQL error code](https://www.postgresql.org/docs/current/errcodes-appendix.html) of the conflict
+1. resolved: The timestamp when the conflict was resolved. NULL if it has not been resolved yet
+1. subscription: The subscription from which the conflict came from
+1. reason: Details about the conflict
+
+Please note, that _reason_ will be in the language determined by `LC_MESSAGES` in postgresql.conf.
+
