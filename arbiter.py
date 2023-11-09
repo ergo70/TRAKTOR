@@ -43,7 +43,7 @@ __author__ = 'Ernst-Georg Schmid'
 __copyright__ = 'Copyright 2023, TRAKTOR'
 __credits__ = ['Ernst-Georg Schmid', 'Aimless']
 __license__ = 'MIT'
-__version__ = '1.5.0'
+__version__ = '1.5.3'
 __maintainer__ = 'Ernst-Georg Schmid'
 __email__ = 'pgchem@tuschehund.de'
 __status__ = 'EXPERIMENTAL'
@@ -125,10 +125,10 @@ SCHEMA = """CREATE SCHEMA IF NOT EXISTS trktr;"""
 TABLES = """CREATE TABLE IF NOT EXISTS trktr.history (
 "subscription" text not null,
  occurred timestamp NOT NULL,
+ reason text not null,
  "lsn" pg_lsn not NULL,
  "relation" text not null,
- "key" text not null,
- "value" text not null,
+ sql_state_code int null,
  resolved timestamp null,
  CONSTRAINT trktr_history_pkey primary key (lsn)
  );
@@ -281,7 +281,7 @@ where
 end;
 $$;
 CREATE OR REPLACE FUNCTION trktr.trktr_find_unresolved_conflicts(fdw text DEFAULT 'file_fdw'::text)
- RETURNS TABLE(log_time timestamp with time zone, context text, detail text)
+ RETURNS TABLE(log_time timestamp with time zone, sql_state_code text, context text, detail text)
  LANGUAGE plpgsql
  STRICT
 AS $$
@@ -341,10 +341,11 @@ begin
 return query
 select
 		l.log_time,
+        l.sql_state_code,
         l.context,
         l.detail
 from
-        trktr.pg_log l where l.sql_state_code = '23505' and backend_type = 'logical replication worker'
+        trktr.pg_log l where l.sql_state_code in ('23505','55000') and backend_type = 'logical replication worker'
 order by
         log_time desc;      
 drop foreign table if exists trktr.pg_log;
@@ -376,16 +377,17 @@ class NodeStatus(BaseStatus):
     auto_resolved: int
     replication_lag_ms: float
     server_version: float
+    pre_16_compatibility: bool
 
 
 class Resolution(BaseModel):
     occurred: str
     lsn: str
     relation: str
-    key: str
-    value: str
+    sql_state_code: str
     resolved: str
     subscription: str
+    reason: str
 
 
 class ResolutionHistory(BaseStatus):
@@ -507,26 +509,27 @@ def enable_subscription(sub):
 
 
 def find_new_conflicts_fdw():
+    """Find new conflicts and INSERT them into the trktr.history TABLE for deferred resolution."""
     origin_regex = r"pg_\d+"
     relation_regex = r"\w+\.\w+"
     finished_at_LSN_regex = r"([0-9A-Fa-f]+)/([0-9A-Fa-f]+)"
-    key_value_regex = r"\(\w+\)=\(\w+\)"
-
+    
     try:
         with closing(psycopg2.connect(CONN_STR)) as conn:
             # Handle the transaction and closing the cursor
-            with conn, conn.cursor() as select_cur, conn.cursor as insert_cur:
+            with conn, conn.cursor() as select_cur, conn.cursor() as insert_cur:
                 select_cur.execute(
-                    """select log_time, context, detail from trktr.trktr_find_unresolved_conflicts('{}');""".format(LSN_RESOLVER))
+                    """select log_time, context, detail, sql_state_code from trktr.trktr_find_unresolved_conflicts('{}');""".format(LSN_RESOLVER))
                 for line in select_cur:
+                    #print(line)
                     timestamp = line[0]
                     context = line[1]
                     detail = line[2]
+                    sql_state = line[3]
                     origin = None
                     relation = None
                     lsn = None
-                    key = None
-                    value = None
+                    
                     if context:
                         # print(context)
                         origin_match = search(origin_regex, context)
@@ -541,21 +544,13 @@ def find_new_conflicts_fdw():
                         if lsn_match:
                             # print("L", lsn.groups())
                             lsn = lsn_match.group()
-                        if detail:
-                            detail_match = search(key_value_regex, detail)
-                            if detail_match:
-                                # print("D", detail_data.group())
-                                key, value = detail_match.group().split(")=(")
-                                key = key.replace('(', '')
-                                # print(key)
-                                value = value.replace(')', '')
-                                # print(value)
 
-                        if (origin and timestamp and lsn and relation and key and value):
-                            insert_cur.execute("""INSERT INTO trktr.history (subscription, occurred, lsn, "relation", "key", "value") VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1), %s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""", (
-                                origin, timestamp, lsn, relation, key, value))
-                            logger.info(
-                                "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Key: %s, Value: %s", origin, timestamp, lsn, relation, key, value)
+                        if (origin and timestamp and lsn and relation):
+                            insert_cur.execute("""INSERT INTO trktr.history (subscription, occurred, reason, lsn, "relation", sql_state_code) VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1),%s,%s,%s,%s,%s::int) ON CONFLICT DO NOTHING""", (
+                                origin, timestamp, detail, lsn, relation, sql_state))
+                            if insert_cur.rowcount == 1:
+                                logger.info(
+                                    "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Detail: %s, SQLState: %s", origin, timestamp, lsn, relation, detail, sql_state)
                         else:
                             logger.error(
                                 "Failed to parse CONTEXT: %s", context)
@@ -564,23 +559,29 @@ def find_new_conflicts_fdw():
 
 
 def resolve_conflicts():
-    """Resolve new conflicts found in the the trktr.history TABLE by advancing the affected SUBSCRIPTION to the next working LSN."""
+    """Resolve new conflicts found in the trktr.history TABLE by advancing the affected SUBSCRIPTION to the next working LSN."""
     try:
         with closing(psycopg2.connect(CONN_STR)) as conn:
             # Handle the transaction and closing the cursor
             with conn, conn.cursor() as cur:
                 cur.execute(
-                    """SELECT lsn, "subscription" FROM trktr.history WHERE resolved IS NULL;""")
+                    """SELECT lsn, "subscription", occurred, reason, relation, sql_state_code FROM trktr.history WHERE resolved IS NULL;""")
                 unresolved = cur.fetchall()
                 # print(unresolved)
                 for ur in unresolved:
                     lsn = ur[0]
                     sub = ur[1]
+                    timestamp = ur[2]
+                    reason = ur[3]
+                    relation = ur[4]
+                    sql_state = ur[5]
 
                     cur.execute(
                         """ALTER SUBSCRIPTION {} SKIP (lsn = %s);""".format(sub), (lsn,))
                     cur.execute(
                         """UPDATE trktr.history SET resolved = transaction_timestamp() WHERE lsn = %s""", (lsn,))
+                    logger.info(
+                                "Resolved conflict on Subscription: %s, Timestamp: %s, LSN: %s, Relation: %s, Reason: %s, SQLState: %s", sub, timestamp, lsn, relation, reason, sql_state)
     except Exception as e:
         logger.warning(e)
 
@@ -594,14 +595,14 @@ def resolver_thread_function():
         subs = check_failed_subscriptions()
 
         if subs:
-            print(subs)
+            #print(subs)
             find_new_conflicts_fdw()
 
         resolve_conflicts()
 
         if subs:
             for sub in subs:
-                print(subs)
+                #print(subs)
                 enable_subscription(sub)
 
         time.sleep(CHECK_INTERVAL)
@@ -693,7 +694,7 @@ def refresher_thread_function(evt, sub, peer_conn_str):
                         if notify.channel == 'trktr_event':
                             if notify.payload == 'trktr_evt_pubchanged':
                                 alter_cur.execute(
-                                'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub))
+                                'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub, sub))
                     alter_cur.close()
                     peer_conn.notifies.clear()
     except Exception as e:
@@ -730,7 +731,7 @@ async def status(request: Request, api_key: APIKey = Depends(api_key_auth)):
         # Handle the transaction and closing the cursor
         with conn, conn.cursor() as cur:
             conn.readonly = True
-            cur.execute("""select row_to_json(t) from (select node_id as node, replicating, tainted, auto_resolved, round(avg_replication_lag,3) as replication_lag_ms, server_version from trktr.v_status) as t;""")
+            cur.execute("""select row_to_json(t) from (select node_id as node, replicating, tainted, auto_resolved, round(avg_replication_lag,3) as replication_lag_ms, server_version, pre_16_compatibility from trktr.v_status) as t;""")
             r = cur.fetchone()
             result = r[0]
 
@@ -771,7 +772,7 @@ async def replicaset_status(request: Request, api_key: APIKey = Depends(api_key_
 
 
 @app.put(COMMON_PATH_V1 + "/subscription/control", tags=['add_subscription'])
-@app.delete(COMMON_PATH_V1 + "/subscription/control", tags=['add_subscription'])
+@app.delete(COMMON_PATH_V1 + "/subscription/control", tags=['remove_subscription'])
 async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIKey = Depends(api_key_auth)):
     """API to add or remove a Traktor SUBSCRIPTION to/from the local PostgreSQL database server."""
     sql = None
