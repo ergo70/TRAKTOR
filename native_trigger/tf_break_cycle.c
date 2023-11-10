@@ -20,6 +20,14 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+// To use this instead of the standard pl/pgSQL trigger function:
+// 1. Compile into a <MODULE_NAME>.so or <MODULE_NAME>.dll
+// 2. Copy the .so or .dll to where PostgreSQL can find it, e.g. the lib directory
+// 3. CREATE OR REPLACE FUNCTION trktr.tf_break_cycle()
+// RETURNS trigger
+// AS '<MODULE_NAME>','tf_break_cycle'
+// LANGUAGE C STRICT;
+
 #include "postgres.h"
 #include "fmgr.h"
 #include "executor/spi.h"       
