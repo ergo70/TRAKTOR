@@ -1,6 +1,6 @@
 # How to install the example dashboard in Grafana
 
-This example dashboard works with the cluster built in the [tutorial](https://github.com/ergo70/TRAKTOR/blob/main/doc/TRAKTOR_tutorial.md).
+This example dashboard works with the cluster built in the [tutorial](https://github.com/ergo70/TRAKTOR/blob/main/doc/TRAKTOR_tutorial.md). It assumes that Grafana is running on the same host than the TRAKTOR tutorial cluster. If not, you have to adapt Allowed Hosts and the URLs in the dashboard accordingly.
 
 ## Create a datasource
 
