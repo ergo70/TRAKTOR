@@ -550,3 +550,6 @@ Every Resolution object shows:
 
 Please note, that _reason_ will be in the language determined by `LC_MESSAGES` in postgresql.conf.
 
+### Connecting monitoring tools to TRAKTOR
+
+Utilizing the monitoring APIs, TRAKTOR nodes can be connected to monitoring tools like Grafana. An example dashboard for Grafana 10.x and instructions how to set it up are available [here](https://github.com/ergo70/TRAKTOR/tree/main/grafana).
