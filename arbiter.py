@@ -513,7 +513,7 @@ def find_new_conflicts_fdw():
     origin_regex = r"pg_\d+"
     relation_regex = r"\w+\.\w+"
     finished_at_LSN_regex = r"([0-9A-Fa-f]+)/([0-9A-Fa-f]+)"
-    
+
     try:
         with closing(psycopg2.connect(CONN_STR)) as conn:
             # Handle the transaction and closing the cursor
@@ -521,7 +521,7 @@ def find_new_conflicts_fdw():
                 select_cur.execute(
                     """select log_time, context, detail, sql_state_code from trktr.trktr_find_unresolved_conflicts('{}');""".format(LSN_RESOLVER))
                 for line in select_cur:
-                    #print(line)
+                    # print(line)
                     timestamp = line[0]
                     context = line[1]
                     detail = line[2]
@@ -529,7 +529,7 @@ def find_new_conflicts_fdw():
                     origin = None
                     relation = None
                     lsn = None
-                    
+
                     if context:
                         # print(context)
                         origin_match = search(origin_regex, context)
@@ -549,7 +549,7 @@ def find_new_conflicts_fdw():
                             insert_cur.execute("""INSERT INTO trktr.history (subscription, occurred, reason, lsn, "relation", sql_state_code) VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1),%s,%s,%s,%s,%s::int) ON CONFLICT DO NOTHING""", (
                                 origin, timestamp, detail, lsn, relation, sql_state))
                             if insert_cur.rowcount == 1:
-                                logger.info(
+                                logger.warning(
                                     "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Detail: %s, SQLState: %s", origin, timestamp, lsn, relation, detail, sql_state)
                         else:
                             logger.error(
@@ -576,7 +576,7 @@ def resolve_conflicts():
                     relation = ur[4]
                     sql_state = ur[5]
 
-		    if sql_state == '55000':
+                    if sql_state == '55000':
                         logger.critical(
                             "The cluster may be structurally inconsistent: %s", reason)
 
@@ -585,9 +585,9 @@ def resolve_conflicts():
                     cur.execute(
                         """UPDATE trktr.history SET resolved = transaction_timestamp() WHERE lsn = %s""", (lsn,))
                     logger.info(
-                                "Resolved conflict on Subscription: %s, Timestamp: %s, LSN: %s, Relation: %s, Reason: %s, SQLState: %s", sub, timestamp, lsn, relation, reason, sql_state)
+                        "Resolved conflict on Subscription: %s, Timestamp: %s, LSN: %s, Relation: %s, Reason: %s, SQLState: %s", sub, timestamp, lsn, relation, reason, sql_state)
     except Exception as e:
-        logger.warning(e)
+        logger.error(e)
 
 
 def resolver_thread_function():
@@ -599,14 +599,14 @@ def resolver_thread_function():
         subs = check_failed_subscriptions()
 
         if subs:
-            #print(subs)
+            # print(subs)
             find_new_conflicts_fdw()
 
         resolve_conflicts()
 
         if subs:
             for sub in subs:
-                #print(subs)
+                # print(subs)
                 enable_subscription(sub)
 
         time.sleep(CHECK_INTERVAL)
@@ -698,7 +698,7 @@ def refresher_thread_function(evt, sub, peer_conn_str):
                         if notify.channel == 'trktr_event':
                             if notify.payload == 'trktr_evt_pubchanged':
                                 alter_cur.execute(
-                                'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub, sub))
+                                    'ALTER SUBSCRIPTION {} REFRESH PUBLICATION WITH (copy_data=false)'.format(sub, sub))
                     alter_cur.close()
                     peer_conn.notifies.clear()
     except Exception as e:
