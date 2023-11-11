@@ -128,7 +128,7 @@ TABLES = """CREATE TABLE IF NOT EXISTS trktr.history (
  reason text not null,
  "lsn" pg_lsn not NULL,
  "relation" text not null,
- sql_state_code int null,
+ sql_state_code text null,
  resolved timestamp null,
  CONSTRAINT trktr_history_pkey primary key (lsn)
  );
@@ -575,6 +575,10 @@ def resolve_conflicts():
                     reason = ur[3]
                     relation = ur[4]
                     sql_state = ur[5]
+
+		    if sql_state == '55000':
+                        logger.critical(
+                            "The cluster may be structurally inconsistent: %s", reason)
 
                     cur.execute(
                         """ALTER SUBSCRIPTION {} SKIP (lsn = %s);""".format(sub), (lsn,))
