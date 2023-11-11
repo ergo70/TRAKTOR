@@ -124,12 +124,12 @@ SCHEMA = """CREATE SCHEMA IF NOT EXISTS trktr;"""
 
 TABLES = """CREATE TABLE IF NOT EXISTS trktr.history (
 "subscription" text not null,
- occurred timestamp NOT NULL,
+ occurred timestamptz NOT NULL,
  reason text not null,
  "lsn" pg_lsn not NULL,
  "relation" text not null,
  sql_state_code text null,
- resolved timestamp null,
+ resolved timestamptz null,
  CONSTRAINT trktr_history_pkey primary key (lsn)
  );
  CREATE TABLE IF NOT EXISTS trktr.replicaset (
