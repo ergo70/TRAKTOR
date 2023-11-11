@@ -1,6 +1,6 @@
 # How to install the example dashboard in Grafana
 
-This example dashboard works with the cluster built in the [tutorial](doc/TRAKTOR_tutorial.md).
+This example dashboard works with the cluster built in the [tutorial](https://github.com/ergo70/TRAKTOR/blob/main/doc/TRAKTOR_tutorial.md).
 
 ## Create a datasource
 
