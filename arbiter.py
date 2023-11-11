@@ -141,7 +141,13 @@ TABLES = """CREATE TABLE IF NOT EXISTS trktr.history (
 
 PUBLICATIONS = """DO $$ BEGIN IF NOT EXISTS (SELECT true FROM pg_publication WHERE pubname = 'trktr_pub_multimaster') THEN CREATE PUBLICATION trktr_pub_multimaster; END IF; END $$;"""
 
-VIEWS = """CREATE OR REPLACE VIEW trktr.v_status
+VIEWS = """CREATE OR REPLACE VIEW trktr.v_peer_node_replication_distance AS
+SELECT 
+slot_name,
+split_part(slot_name, '_', 3) AS peer_node,
+(pg_current_wal_lsn() - confirmed_flush_lsn) AS lsn_distance_bytes
+FROM pg_replication_slots;
+CREATE OR REPLACE VIEW trktr.v_status
  AS SELECT {} as node_id,
  not exists ((SELECT true FROM pg_subscription WHERE not subenabled AND subname like 'trktr_sub_{}_%' limit 1)) as replicating,
  exists ((SELECT true FROM trktr.history limit 1)) as tainted,
