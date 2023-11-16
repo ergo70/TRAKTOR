@@ -43,7 +43,7 @@ __author__ = 'Ernst-Georg Schmid'
 __copyright__ = 'Copyright 2023, TRAKTOR'
 __credits__ = ['Ernst-Georg Schmid', 'Aimless']
 __license__ = 'MIT'
-__version__ = '1.5.3'
+__version__ = '1.6.0'
 __maintainer__ = 'Ernst-Georg Schmid'
 __email__ = 'pgchem@tuschehund.de'
 __status__ = 'EXPERIMENTAL'
@@ -141,7 +141,8 @@ TABLES = """CREATE TABLE IF NOT EXISTS trktr.history (
 
 PUBLICATIONS = """DO $$ BEGIN IF NOT EXISTS (SELECT true FROM pg_publication WHERE pubname = 'trktr_pub_multimaster') THEN CREATE PUBLICATION trktr_pub_multimaster; END IF; END $$;"""
 
-VIEWS = """CREATE OR REPLACE VIEW trktr.v_peer_node_replication_distance AS
+VIEWS = """
+CREATE OR REPLACE VIEW trktr.v_peer_node_replication_distance AS
 SELECT 
 slot_name,
 split_part(slot_name, '_', 3) AS peer_node,
@@ -170,7 +171,7 @@ FUNCTIONS = """
 do $$
 begin
 if (current_setting('server_version')::float < 16.0 OR (select pre_16_compatibility from trktr.v_status)) then
-	CREATE OR REPLACE FUNCTION trktr.tf_break_cycle()
+	CREATE OR REPLACE FUNCTION trktr.tf_trktr_break_cycle()
  RETURNS trigger
  LANGUAGE plpgsql
  STRICT
@@ -202,7 +203,7 @@ begin
 		fqt := quote_ident(table_schema) || '.' || tbl;
         if (current_setting('server_version')::float < 16.0 OR (select pre_16_compatibility from trktr.v_status))  then
 		    execute 'alter table ' || fqt || ' add column if not exists origin int2 not null default {}, add column if not exists is_local boolean not null default true';
-		    execute 'create trigger ' || trg  || ' before insert or update on ' || fqt || ' for each row execute function trktr.tf_break_cycle()';
+		    execute 'create trigger ' || trg  || ' before insert or update on ' || fqt || ' for each row execute function trktr.tf_trktf_break_cycle()';
             execute 'alter table ' || fqt || ' enable always trigger ' || trg;
         end if;
         execute 'alter publication trktr_pub_multimaster add table ' || fqt;
@@ -287,7 +288,7 @@ where
 end;
 $$;
 CREATE OR REPLACE FUNCTION trktr.trktr_find_unresolved_conflicts(fdw text DEFAULT 'file_fdw'::text)
- RETURNS TABLE(log_time timestamp with time zone, sql_state_code text, context text, detail text)
+ RETURNS TABLE(log_time timestamp with time zone, sql_state_code text, context text, detail text, message text)
  LANGUAGE plpgsql
  STRICT
 AS $$
@@ -349,7 +350,8 @@ select
 		l.log_time,
         l.sql_state_code,
         l.context,
-        l.detail
+        l.detail,
+        l.message
 from
         trktr.pg_log l where l.sql_state_code in ('23505','55000') and backend_type = 'logical replication worker'
 order by
@@ -357,6 +359,58 @@ order by
 drop foreign table if exists trktr.pg_log;
 end;$$;
 """.format(NODE)
+
+EVENT_TRIGGERS = """
+create or replace
+function trktr.trktr_tf_protect_drop_replicaset()
+  returns event_trigger
+ language plpgsql
+  as $$
+  declare
+  	r record;
+
+begin
+  		for r in
+select
+	schema_name,
+	object_name,
+	object_identity
+from
+	pg_event_trigger_dropped_objects() loop
+	  		if exists(
+	select
+		true
+	from
+		trktr.replicaset
+	where
+		table_schema = r.schema_name
+		and table_name = r.object_name) then
+	   			RAISE WARNING E'Cannot DROP a replicated table %', r.object_identity using HINT = 'Table is immutable part of a TRAKTOR replicaset';
+raise exception sqlstate '55006';
+end if;
+end loop;
+end;
+$$;
+CREATE EVENT TRIGGER pgc_evtrg_trktr_protect_drop_replicaset ON sql_drop WHEN TAG IN ('DROP TABLE')
+   EXECUTE FUNCTION trktr.trktr_tf_protect_drop_replicaset();
+  CREATE OR REPLACE FUNCTION trktr.trktr_tf_protect_alter_replicaset()
+ RETURNS event_trigger
+ LANGUAGE plpgsql
+AS $function$
+  declare
+  	r record;
+begin
+  		for r in select object_identity from pg_event_trigger_ddl_commands() loop
+	  		if exists(select true from trktr.replicaset where table_schema || '.' || table_name = r.object_identity) then
+	   			RAISE WARNING E'Cannot ALTER a replicated table %', r.object_identity using HINT = 'Table is immutable part of a TRAKTOR replicaset';
+				RAISE exception SQLSTATE '55006';
+			end if;
+  		end loop;
+END;
+$function$;
+CREATE EVENT TRIGGER pgc_evtrg_trktr_protect_alter_replicaset ON ddl_command_end WHEN TAG IN ('ALTER TABLE')
+	EXECUTE FUNCTION trktr.trktr_tf_protect_alter_replicaset();
+"""
 
 
 class SubscriptionControl(BaseModel):
@@ -439,6 +493,8 @@ def setup_db_objects():
             cur.execute(
                 FUNCTIONS)
             logger.debug("Functions")
+            cur.execute(EVENT_TRIGGERS)
+            logger.debug("Event Triggers")
             cur.execute(PUBLICATIONS)
             logger.debug("Publications")
             cur.execute("LISTEN trktr_event;")
@@ -525,38 +581,47 @@ def find_new_conflicts_fdw():
             # Handle the transaction and closing the cursor
             with conn, conn.cursor() as select_cur, conn.cursor() as insert_cur:
                 select_cur.execute(
-                    """select log_time, context, detail, sql_state_code from trktr.trktr_find_unresolved_conflicts('{}');""".format(LSN_RESOLVER))
+                    """select log_time, context, detail, sql_state_code, message from trktr.trktr_find_unresolved_conflicts('{}');""".format(LSN_RESOLVER))
                 for line in select_cur:
                     # print(line)
                     timestamp = line[0]
                     context = line[1]
                     detail = line[2]
                     sql_state = line[3]
+                    message = line[4]
                     origin = None
                     relation = None
                     lsn = None
+                    reason = None
 
                     if context:
-                        # print(context)
+                        # print(context, detail)
                         origin_match = search(origin_regex, context)
                         if origin_match:
-                            # print("G", origin.group())
+                            # print("G", origin_match.group())
                             origin = origin_match.group()
                         relation_match = search(relation_regex, context)
                         if relation_match:
-                            # print("R", relation.group())
+                            reason = detail
+                            # print("R", relation_match.group())
                             relation = relation_match.group()
+                        else:
+                            relation_match = search(relation_regex, message)
+                            if relation_match:
+                                reason = message
+                                # print("R2", relation_match.group())
+                                relation = relation_match.group()
                         lsn_match = search(finished_at_LSN_regex, context)
                         if lsn_match:
-                            # print("L", lsn.groups())
+                            # print("L", lsn_match.group())
                             lsn = lsn_match.group()
 
-                        if (origin and timestamp and lsn and relation):
+                        if (origin and timestamp and lsn and relation and sql_state and reason):
                             insert_cur.execute("""INSERT INTO trktr.history (subscription, occurred, reason, lsn, "relation", sql_state_code) VALUES ((select subname from pg_subscription where ('pg_' || oid) = %s limit 1),%s,%s,%s,%s,%s::int) ON CONFLICT DO NOTHING""", (
-                                origin, timestamp, detail, lsn, relation, sql_state))
+                                origin, timestamp, reason, lsn, relation, sql_state))
                             if insert_cur.rowcount == 1:
                                 logger.warning(
-                                    "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Detail: %s, SQLState: %s", origin, timestamp, lsn, relation, detail, sql_state)
+                                    "Found conflict on Origin: %s, Timestamp: %s, LSN: %s, Relation: %s, Reason: %s, SQLState: %s", origin, timestamp, lsn, relation, reason, sql_state)
                         else:
                             logger.error(
                                 "Failed to parse CONTEXT: %s", context)
