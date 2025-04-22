@@ -74,7 +74,7 @@ before 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
 
 since 16.x:
 ```
-CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
+CREATE ROLE traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
 GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
 GRANT pg_create_subscription TO traktor_arbiter;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO traktor_arbiter;
@@ -242,8 +242,8 @@ should now show:
 
 |id|payload|
 |--|-------|
-|1|Hello|
-|2|TRAKTOR|
+|0|Hello|
+|1|TRAKTOR|
 
 Congratulations! You have just set up your first multimaster replication cluster with TRAKTOR.
 
