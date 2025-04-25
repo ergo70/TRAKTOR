@@ -1,6 +1,9 @@
 # TRAKTOR Tutorial
+
+## TRAKTOR?
+
 TRAKTOR is a true multimaster replication solution for vanilla PostgreSQL on top of logical replication, implemented as a shared-nothing architecture.
-It has been tested with 15.x and 16.x on a Windows laptop. Support for RDS and Aurora on AWS is ongoing, but this tutorial assumes using file_fdw, not log_fdw.
+It has been tested with PostgreSQL 16.x and 17.x on a Windows laptop. It should work with RDS and Aurora, but this tutorial assumes using file_fdw, not log_fdw.
 In this tutorial, you will initially setup a two node cluster and then extend it to three nodes.
 
 ## Preparing PostgreSQL
@@ -18,7 +21,7 @@ log_min_messages = error # At least error is required
 ```
 
 ### Addressing the database servers
-Each node must be distinguishable by address. If you test on a single machine, it is sufficient to have separate data directories and set different ports in postgresql.conf, e.g.:
+Each Node must be distinguishable by its address. If you test on a single machine, it is sufficient to have separate data directories and set different ports in postgresql.conf, e.g.:
 
 ```
 port=5433
@@ -31,57 +34,50 @@ The Arbiter nodes work alongside each PostgreSQL server and provide all necessar
 
 Setting up the arbiter nodes is straightforward:
 
-1. Install Python3, Development and testing were done with 3.10.x
+1. Install Python3, Development and testing were done with 3.13.x
 1. Install packages from requirements.txt
-1. Create directories for each node you want to run
-1. Copy arbiter.py, arbiter.ini and logging.conf into each directory
-1. Change arbiter.ini to match your setup
+1. Create directories for each Node you want to run
+1. Copy arbiter.py, arbiter.conf and logging.conf into each directory
+1. Change arbiter.conf to match your setup
 
-requirements.txt references psycopg2-binary by default, the PostgreSQL driver including all necessary native binaries. If you have them already installed, you can install psycopg instead.
-
-You will also need tools to connect to the database, e.g. psql or [dBeaver](https://dbeaver.io/) CE, and to make HTTP/S calls, e.g. curl or [Postman](https://www.postman.com/).
+You will also need tools to connect to the database, e.g. psql or [dBeaver](https://dbeaver.io/) CE, and to make HTTP/S calls, e.g. curl or [Bruno](https://www.usebruno.com/).
 
 ```
 [DEFAULT]
-NodeID = # The individual node id. This is an Integer
-ConnectionString = # The PostgreSQL [keyword/value connection string](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING-KEYWORD-VALUE), e.g. host=127.0.0.1 port=5433 user=<user> password=<password> dbname=tutorial
+NodeID = # The individual Node id. This is an Integer
+ConnectionString = # The PostgreSQL [keyword/value connection string](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING-KEYWORD-VALUE), e.g. host=127.0.0.1 port=5433 user=<user> password=<password> dbname=traktor_tutorial
 APIAddress = 127.0.0.1:8080 # The API Endpoint
 CheckInterval = 10 # How often to check for conflicts, in Seconds
 APIKey =  # The secret API Key
-LSNResolver = file_fdw # Enable automatic conflict resolution with either file_fdw or log_fdw
-Pre16Compatibility = False # If you run 16.x server mixed in a cluster with pre-16.x servers, this must be True, since < 16.x uses a different cycle resolution method, and >= 16.x has to emulate this
+LSNResolver = file_fdw # Enable automatic conflict resolution with either [file_fdw, log_fdw], or disable
+# SSLKeyfile = # If both are present
+# SSLCertfile = # the Node will enable SSL
 ```
 
 ## Let's go
-We start with two PostgreSQL 16.x servers on ports 5433 and 5434, so change the `port` entry in postgresql.conf accordingly.
+We start with two PostgreSQL 17.x servers on ports 5433 and 5434, so change the `port` entry in postgresql.conf accordingly.
 
 Create the databases:
 
 `CREATE DATABASE traktor_tutorial;`
 
-Connect to each new database and create a schema:
+Connect to each new database. Create the replication user and a schema, e.g.:
 
-`CREATE SCHEMA multimaster;`
-
-Create the replication user:
-
-Unfortunately, PostgreSQL < 16.x requires SUPERUSER privilege in order to create logical replication subscriptions.
-Since 16.x, this is not required anymore. According to the [documentation](https://www.postgresql.org/docs/16/logical-replication-security.html), membership in pg_create_subscription is sufficient, but SUPERUSER will still work.
-
-**So for the sake of simplicity, you might just continue with SUPERUSER.**
-
-before 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
-
-since 16.x:
 ```
-CREATE ROLE traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
+CREATE USER trktr_arbiter PASSWORD 'traktor' SUPERUSER;
 GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
+GRANT EXECUTE ON FUNCTION pg_ls_logdir() TO traktor_arbiter;
 GRANT pg_create_subscription TO traktor_arbiter;
+grant pg_read_all_settings to traktor_arbiter;
+grant pg_read_server_files to traktor_arbiter;
 GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO traktor_arbiter;
 GRANT SELECT ON pg_subscription TO traktor_arbiter;
+
+CREATE SCHEMA multimaster;
+GRANT USAGE ON SCHEMA multimaster TO traktor_arbiter;
 ```
 
-Still, the user runs with elevated privileges, so beyond this tutorial, more security than a Password is advisable.
+**The user will drop it's SUPERUSER privileges immediately after the Node was initialized.**
 
 Now, on the arbiter nodes:
 
@@ -94,7 +90,6 @@ APIAddress = 127.0.0.1:8080
 CheckInterval = 10
 APIKey =  LetMeIn
 LSNResolver = file_fdw
-Pre16Compatibility = False
 ```
 
 ### Node 1
@@ -107,14 +102,11 @@ APIAddress = 127.0.0.1:8081
 CheckInterval = 10
 APIKey =  LetMeIn
 LSNResolver = file_fdw
-Pre16Compatibility = False
 ```
 
 ### Starting the Arbiter
 
-Run them:
-
-`python3 arbiter.py` for each directory you installed it in.
+Run `python3 arbiter.py` for each directory you installed it in.
 
 You should see output like this:
 ```
@@ -122,12 +114,12 @@ INFO:     Started server process [164]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
 INFO:     Uvicorn running on https://127.0.0.1:8080 (Press CTRL+C to quit)
-2023-10-09 11:30:50,123 loglevel=INFO   logger=__main__ check_failed_subscriptions() L416  No FAILed subscriptions found
-2023-10-09 11:30:50,199 loglevel=WARNING logger=__main__ resolve_conflicts() L502  relation "trktr.history" does not exist
+2025-04-09 11:30:50,123 loglevel=INFO   logger=__main__ check_failed_subscriptions() L416  No FAILed subscriptions found
+2025-04-09 11:30:50,199 loglevel=WARNING logger=__main__ resolve_conflicts() L502  relation "trktr.history" does not exist
 LINE 1: SELECT lsn, "subscription" FROM trktr.history WHERE resolved...
 ```
 
-The WARNING is ok for now, because the node has not been initialized yet. So let's fix this.
+The WARNING is OK for now, because the Node has not been initialized yet. So let's fix this.
 
 ### Initialize the Database via API
 
@@ -151,11 +143,11 @@ curl --location --request PUT 'http://localhost:8081/v1/arbiter/control' \
 ```
 201 Created
 
-Now, the WARNING about missing database objects should be gone.
+Now the WARNING about missing the missing TABLE _trktr.history_ should be gone.
 
 You also need mutual SUBSCRIPTIONS. Again, those are created by API call:
 
-`inbound_node` is the node ID the subscription points to, `connection_string` the matching connection string for the respective database server.
+`inbound_node` is the Node ID the subscription points to, `connection_string` the matching connection string for the respective database server.
 
 ```
 curl --location --request PUT 'http://localhost:8080/v1/arbiter/subscription/control' \
@@ -173,12 +165,12 @@ curl --location --request PUT 'http://localhost:8081/v1/arbiter/subscription/con
 ```
 201 Created
 
-Again, the use of cleartext passwords in the connection_string is NOT recommended for production setups!
+**The use of cleartext passwords in the connection_string is NOT recommended for production setups! See [pg_hba.conf](https://www.postgresql.org/docs/current/auth-pg-hba-conf.html) for alternatives.**
 
-`SELECT subname FROM pg_subscription;` should show trktr_sub_0_1 on Node 0 and trktr_sub_1_0 on Node 1 now.
+`SELECT subname FROM pg_subscription;` should show _trktr_sub_0_1_ on Node 0 and _trktr_sub_1_0_ on Node 1 now.
 
 ### Create a TABLE for replication
-In both database servers, create a simple test table:
+In both database servers, create a simple test TABLE:
 
 ```
 CREATE TABLE multimaster.reptest (
@@ -186,7 +178,10 @@ CREATE TABLE multimaster.reptest (
 	payload text NULL,
 	CONSTRAINT reptest_pk PRIMARY KEY (id)
 );
+ALTER TABLE multimaster.reptest OWNER TO traktor_arbiter;
 ```
+
+**Tables in replication MUST be owned by the TRAKTOR user, like traktor_arbiter in this example, to be added to the PUBLICATION. If there is a less intrusive way, please let me know.**
 
 ### Managing the Replicaset
 To add or remove tables from replication, they first must be added or removed from the Replicaset via API:
@@ -202,7 +197,7 @@ curl --location --request PUT 'http://localhost:8081/v1/arbiter/replicaset/multi
 ```
 201 Created
 
-The TABLE multimaster.reptest is now scheduled for replication, but not active yet. To process all pending add/remove operations in the Replicaset, it must be COMMITTed on both nodes.
+The TABLE _multimaster.reptest_ is now scheduled for replication, but not active yet. To process all pending add/remove operations in the Replicaset, it must be COMMITTed on both nodes.
 
 ```
 curl --location --request PATCH 'http://localhost:8080/v1/arbiter/replicaset' \
@@ -249,29 +244,29 @@ Congratulations! You have just set up your first multimaster replication cluster
 
 ## Extending the cluster
 
-We add another PostgreSQL  server on ports 5435, so change the `port` entry in postgresql.conf accordingly.
+We add another PostgreSQL server on ports 5435, so change the `port` entry in postgresql.conf accordingly.
 
 Create the databases:
 
 `CREATE DATABASE traktor_tutorial;`
 
-Connect to each new database and create a schema:
+Connect to each new database. Create the replication user and a schema, e.g.:
 
-`CREATE SCHEMA multimaster;`
-
-Create the replication user:
-
-before 16.x: `CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN SUPERUSER;`
-
-since 16.x:
 ```
-CREATE USER traktor_arbiter PASSWORD 'traktor' LOGIN REPLICATION;
+CREATE USER trktr_arbiter PASSWORD 'traktor' SUPERUSER;
 GRANT CREATE ON DATABASE traktor_tutorial TO traktor_arbiter;
+GRANT EXECUTE ON FUNCTION pg_ls_logdir() TO traktor_arbiter;
 GRANT pg_create_subscription TO traktor_arbiter;
-GRANT pg_read_server_files TO traktor_arbiter;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_ls_logdir() TO traktor_arbiter;
+grant pg_read_all_settings to traktor_arbiter;
+grant pg_read_server_files to traktor_arbiter;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO traktor_arbiter;
 GRANT SELECT ON pg_subscription TO traktor_arbiter;
+
+CREATE SCHEMA multimaster;
+GRANT USAGE ON SCHEMA multimaster TO traktor_arbiter;
 ```
+
+**The user will drop it's SUPERUSER privileges immediately after the Node was initialized.**
 
 And the multimaster.reptest Table:
 
@@ -281,12 +276,13 @@ CREATE TABLE multimaster.reptest (
 	payload text NULL,
 	CONSTRAINT reptest_pk PRIMARY KEY (id)
 );
+ALTER TABLE multimaster.reptest OWNER TO traktor_arbiter;
 ```
 
-Next, on the arbiter node:
+Next, on the arbiter Node:
 
 ### Node 2
-Create a new directory as shown above, with the following arbiter.ini
+Create a new directory as shown above, with the following arbiter.conf
 
 ```
 [DEFAULT]
@@ -296,14 +292,13 @@ APIAddress = 127.0.0.1:8082
 CheckInterval = 10
 APIKey =  LetMeIn
 LSNResolver = file_fdw
-Pre16Compatibility = False
 ```
 
 and start arbiter.py.
 
 Now, all nodes must be included in the new three node cluster:
 
-Initialize node 2:
+Initialize Node 2:
 ```
 curl --location --request PUT 'http://localhost:8082/v1/arbiter/control' \
 --header 'X-API-KEY: LetMeIn'
@@ -326,7 +321,7 @@ curl --location --request PUT 'http://localhost:8082/v1/arbiter/subscription/con
 ```
 201 Created
 
-On node 0:
+On Node 0:
 
 ```
 curl --location --request PUT 'http://localhost:8080/v1/arbiter/subscription/control' \
@@ -336,7 +331,7 @@ curl --location --request PUT 'http://localhost:8080/v1/arbiter/subscription/con
 ```
 201 Created
 
-On node 1:
+On Node 1:
 
 ```
 curl --location --request PUT 'http://localhost:8081/v1/arbiter/subscription/control' \
@@ -346,7 +341,7 @@ curl --location --request PUT 'http://localhost:8081/v1/arbiter/subscription/con
 ```
 201 Created
 
-Add multimaster.reptest to the Replicaset on node 2:
+Add multimaster.reptest to the replicaset on Node 2:
 
 ```
 curl --location --request PUT 'http://localhost:8082/v1/arbiter/replicaset/multimaster.reptest' \
@@ -364,31 +359,31 @@ curl --location --request PATCH 'http://localhost:8082/v1/arbiter/replicaset' \
 
 Test it.
 
-On node 2:
+On Node 2:
 
-`INSERT INTO multimaster.reptest (id, payload) VALUES (3, 'Hello, Node 2');`
+`INSERT INTO multimaster.reptest (id, payload) VALUES (2, 'Hello, Node 2');`
 
-On node 0 or 1:
+On Node 0 or 1:
 
-`INSERT INTO multimaster.reptest (id, payload) VALUES (4, 'Hello again, Node 2');`
+`INSERT INTO multimaster.reptest (id, payload) VALUES (3, 'Hello again, Node 2');`
 
-On node 0 and 1 `SELECT * FROM multimaster.reptest ORDER BY id ASC;` should now show:
-
-|id|payload|
-|--|-------|
-|1|Hello|
-|2|TRAKTOR|
-|3|Hello, Node 2|
-|4|Hello again, Node 2|
-
-And on your new node 2:
+On Node 0 and 1 `SELECT * FROM multimaster.reptest ORDER BY id ASC;` should now show:
 
 |id|payload|
 |--|-------|
-|3|Hello, Node 2|
-|4|Hello again, Node 2|
+|0|Hello|
+|1|TRAKTOR|
+|2|Hello, Node 2|
+|3|Hello again, Node 2|
 
-And that's it. A fully functional three node multimaster replicating cluster with vanilla PostgreSQL servers. The hard work of designing a conflict free schema begins now. Stay tuned.
+And on your new Node 2:
+
+|id|payload|
+|--|-------|
+|2|Hello, Node 2|
+|3|Hello again, Node 2|
+
+And that's it. A fully functional three node multimaster replicating cluster with vanilla PostgreSQL servers. The hard work of designing a conflict free schema begins now.
 
 ## Automatic conflict resolution
 
@@ -397,21 +392,21 @@ Usually, this has to be fixed manually, e.g. as described [here](https://www.pos
 
 Let's try:
 
-1. Stop the PostgreSQL server for node 0. The Arbiters can keep running
-1. On node 1: `INSERT INTO multimaster.reptest (id, payload) VALUES (5, 'Oh no!');`
-1. Stop node 1
-1. Start node 0
-1. On node 0: `INSERT INTO multimaster.reptest (id, payload) VALUES (5, 'A conflict!');`
-1. Start node 1
+1. Stop the PostgreSQL server for Node 0. The Arbiters can keep running
+1. On Node 1: `INSERT INTO multimaster.reptest (id, payload) VALUES (5, 'Oh no!');`
+1. Stop Node 1
+1. Start Node 0
+1. On Node 0: `INSERT INTO multimaster.reptest (id, payload) VALUES (5, 'A conflict!');`
+1. Start Node 1
 
-This was the split-brain. Node 0 and 1 now have conflicting rows for the same key. The replication stops immediately but the Arbiter nodes notice this, automatically apply the necessary `ALTER SUBSCRIPTION SKIP` commands, and re-ENABLE the affected SUBSCRIPTIONs.
-Better yet, they also write the cause of the conflict(s) into trktr.history. Because the conflict was solved purely technical, you might want to look up the offending entries in trktr.history and fix the state of the cluster on the logical level. But that is optional.
+This was the split-brain scenario. Node 0 and 1 now have conflicting rows for the same key. The replication stops immediately but the Arbiter nodes notice this, automatically apply the necessary `ALTER SUBSCRIPTION SKIP` commands, and re-ENABLE the affected SUBSCRIPTIONs.
+Better yet, they also write the cause of the conflict(s) into _trktr.history_. Because the conflict was solved purely technical, you might want to look up the offending entries in _trktr.history_ and fix the state of the cluster on the logical level. But that is optional.
 
-trktr.history on each node now will contain a row like this:
+_trktr.history_ on each node now will contain a row like this:
 
 |subscription|occurred|lsn|relation|key|value|resolved|
 |------------|--------|---|--------|---|-----|--------|
-|trktr_sub_0_1|2023-10-11 11:15:15.099|0/28F6BC8|multimaster.reptest|id|5|2023-10-11 11:15:18.291776|
+|trktr_sub_0_1|2025-04-11 11:15:15.099|0/28F6BC8|multimaster.reptest|id|5|2025-04-11 11:15:18.291776|
 
 Cool, ain't it?
 
@@ -452,11 +447,11 @@ curl --location --request PATCH 'http://localhost:8082/v1/arbiter/replicaset' \
 ```
 200 OK
 
-The table multimaster.reptest is now removed from replication. You can INSERT the same key on all nodes without collision or DROP the tables now.
+The table _multimaster.reptest_ is now removed from replication. You can INSERT the same key on all nodes without collision or safely DROP the tables now.
 
 ## Monitoring TRAKTOR nodes
 
-Every TRAKTOR arbiter node has three API calls to monitor its status. To see the status of the node itself, call
+Every TRAKTOR arbiter node has three API calls to monitor its status. To see the status of the Node itself, call
 ```
 curl --location 'http://localhost:8080/v1/arbiter/status' \
 --header 'X-API-KEY: LetMeIn'
@@ -466,26 +461,26 @@ curl --location 'http://localhost:8080/v1/arbiter/status' \
 ```
 {
     "node": 0,
-    "replicating": true,
-    "tainted": true,
-    "auto_resolved": 1,
+    "is_replicating": true,
+    "is_tainted": true,
+    "conflicts_resolved": 1,
+    "conflicts_pending": 0,
     "replication_lag_ms": 0.139,
-    "server_version": 16.0,
-    "pre_16_compatibility": false
+    "server_version": 17.4
 }
 ```
 
 The meaning of those fields is a follows:
 
 1. node: The Node ID
-1. replicating: Is the Node currently replicating ok, i.e. there are no failed SUBSCRIPTIONs
-1. tainted: If the LSN Resolver has fixed a conflict, the mutual data of the TRAKTOR cluster could be in an inconsistent state. This node is tainted
-1. auto_resolved: How many conflicts were auto resolved since the initialization of the TRAKTOR cluster
+1. is_replicating: Is the Node currently replicating ok, i.e. there are no failed SUBSCRIPTIONs
+1. is_tainted: If the LSN Resolver has fixed a conflict, the mutual data of the TRAKTOR cluster could be in an inconsistent state. This node is tainted
+1. conflicts_resolved: How many conflicts were auto resolved since the initialization of the TRAKTOR cluster
+1. conflicts_pending: How many conflicts are pending resolution since the initialization of the TRAKTOR cluster
 1. replication_lag_ms: The current [replication lag](https://www.percona.com/blog/replication-lag-in-postgresql) in milliseconds
 1. server_version: The PostgreSQL version number
-1. pre_16_compatiblity: Is the compatibility mode for PostgreSQL &lt; 16.x activated
 
-To see the status of the node replicaset, call
+To see the status of the nodes replicaset, call
 ```
 curl --location 'http://localhost:8080/v1/arbiter/replicaset/status' \
 --header 'X-API-KEY: LetMeIn'
@@ -505,12 +500,12 @@ The replicaset is empty, otherwise you should see:
     "replicaset": [
         {
             "relation": "multimaster.reptest",
-            "status": "active"
+            "status": "committed"
         }
     ]
 }
 ```
-The replicaset on Node 0 contains one TABLE, multimaster.reptest, which is currently in active replication. 
+The replicaset on Node 0 contains one TABLE, _multimaster.reptest_, which is currently in active replication. 
 
 If the cluster is tainted and auto_resolved is > 0, you might want to see the resolution history to see which data might be inconsistent. Call:
 ```
@@ -523,11 +518,11 @@ curl --location 'http://localhost:8080/v1/arbiter/resolution/history' \
     "node": 0,
     "resolutions": [
         {
-            "occurred": "2023-11-03T22:32:15.509",
+            "occurred": "2025-04-03T22:32:15.509",
             "lsn": "0/3AED440",
             "relation": "multimaster.reptest",
             "sql_state_code": "23505",
-            "resolved": "2023-11-03T22:43:28.841261",
+            "resolved": "2025-04-03T22:43:28.841261",
             "subscription": "trktr_sub_0_1",
             "reason": "Key (id)=(3) already exists."
         }
@@ -544,7 +539,7 @@ Every Resolution object shows:
 1. lsn: The logical sequence number of the conflict
 1. relation: The relation involved in the conflict
 1. sql_state_code: The [SQL error code](https://www.postgresql.org/docs/current/errcodes-appendix.html) of the conflict
-1. resolved: The timestamp when the conflict was resolved. NULL if it has not been resolved yet
+1. resolved: The timestamp when the conflict was resolved. _NULL_ if it has not been resolved yet
 1. subscription: The subscription from which the conflict came from
 1. reason: Details about the conflict
 
@@ -552,4 +547,4 @@ Please note, that _reason_ will be in the language determined by `LC_MESSAGES` i
 
 ### Connecting monitoring tools to TRAKTOR
 
-Utilizing the monitoring APIs, TRAKTOR nodes can be connected to monitoring tools like Grafana. An example dashboard for Grafana 10.x and instructions how to set it up are available [here](https://github.com/ergo70/TRAKTOR/tree/main/grafana).
+Utilizing the monitoring APIs, TRAKTOR nodes can easily be connected to monitoring tools like [Grafana](https://grafana.com/).
