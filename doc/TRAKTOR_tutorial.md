@@ -14,6 +14,7 @@ TRAKTOR uses the logical replication feature of PostgreSQL for true multimaster 
 postgresql.conf must contain the following settings:
 
 ```
+ssl = on
 wal_level = logical
 log_destination = 'csvlog' # You can add others, but csvlog has to be available
 logging_collector = on
