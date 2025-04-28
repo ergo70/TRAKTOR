@@ -29,6 +29,7 @@ import uvicorn
 import configparser
 import threading
 import logging
+import ssl
 from sys import exit
 from pg8000.core import DatabaseError
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, Security
@@ -92,9 +93,12 @@ class ResolutionHistory(BaseStatus):
 class DatabaseConnInfo(BaseModel):
     dbname: str = """postgres"""
     host: str = """localhost"""
-    user: str = """trktr_arbiter"""
+    user: Optional[str] = """trktr_arbiter"""
     port: Optional[int] = 5432
     password: Optional[str] = None
+    sslcert: Optional[str] = None
+    sslkey: Optional[str] = None
+    sslrootcert: Optional[str] = None
 
 
 tags_metadata = [
@@ -154,6 +158,32 @@ def parse_connection_string(connection_string: str) -> DatabaseConnInfo:
         c.split('=') for c in connection_string.split())})
 
 
+def get_pg_connection(database: str, host: str, port: int, user: str = None, password: str = None, sslcert: str = None, sslkey: str = None, sslrootcert: str = None, read_only: bool = False) -> pg8000.native.Connection:
+    """Get a secured connection to the database."""
+    conn = None
+
+    if (user and password):
+        # Simple connection with user and password and relaxed SSL settings
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        conn = pg8000.native.Connection(
+            database=database, host=host, port=port, user=user, password=password, ssl_context=ssl_context)
+    elif (sslcert and sslkey and sslrootcert):
+        # Secure connection with mutual SSL certificates (also for identifying the USER) and strict SSL settings
+        ssl_context = ssl.create_default_context(
+            cafile=sslrootcert, keyfile=sslkey, certfile=sslcert)
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        ssl_context.check_hostname = True
+        conn = pg8000.native.Connection(
+            database=database, host=host, port=port, ssl_context=ssl_context)
+
+    if (conn and read_only):
+        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+
+    return conn
+
+
 PG_MIN_VERSION = 160000
 CHECK_INTERVAL = config["""DEFAULT"""].getint("""CheckInterval""", 10)
 NODE = config["""DEFAULT"""].getint("""NodeID""")
@@ -176,16 +206,18 @@ api_key_header = APIKeyHeader(name="""X-API-KEY""", auto_error=False)
 
 PERMISSIONS = f"""
 GRANT CREATE ON DATABASE {DB_CONN_INFO.dbname} TO {DB_CONN_INFO.user};
-GRANT EXECUTE ON FUNCTION pg_ls_logdir TO {DB_CONN_INFO.user};
 GRANT pg_create_subscription TO {DB_CONN_INFO.user};
-grant pg_read_all_settings to {DB_CONN_INFO.user};
-grant pg_read_server_files to {DB_CONN_INFO.user};
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_current_logfile(text) TO {DB_CONN_INFO.user};
+GRANT pg_read_all_settings TO {DB_CONN_INFO.user};
+GRANT pg_read_server_files TO {DB_CONN_INFO.user};
 GRANT SELECT ON pg_subscription TO {DB_CONN_INFO.user};
 """
 
 if LSN_RESOLVER in ["""file_fdw""", """log_fdw"""]:
     PERMISSIONS += f"""CREATE EXTENSION IF NOT EXISTS {LSN_RESOLVER};GRANT USAGE ON FOREIGN DATA WRAPPER {LSN_RESOLVER} TO {DB_CONN_INFO.user};"""
+    if LSN_RESOLVER == """file_fdw""":
+        PERMISSIONS += f"""GRANT EXECUTE ON FUNCTION pg_ls_logdir() TO {DB_CONN_INFO.user};"""
+    elif LSN_RESOLVER == """log_fdw""":
+        PERMISSIONS += f"""GRANT EXECUTE ON FUNCTION list_postgres_log_files() TO {DB_CONN_INFO.user};"""
 
 SCHEMA = f"""CREATE SCHEMA IF NOT EXISTS trktr AUTHORIZATION {DB_CONN_INFO.user};"""
 
@@ -223,7 +255,7 @@ CREATE OR REPLACE VIEW trktr.v_status
 ( SELECT count(*) AS count
            FROM trktr.history
           WHERE history.resolved IS NULL) AS conflicts_pending,
-(select avg(1000 * extract(epoch from (last_msg_receipt_time - last_msg_send_time))) from pg_stat_subscription where subname like 'trktr_sub_{NODE}_%') as avg_replication_lag,
+COALESCE((select avg(1000 * extract(epoch from (last_msg_receipt_time - last_msg_send_time))) from pg_stat_subscription where subname like 'trktr_sub_{NODE}_%'), 0.0) as avg_replication_lag,
 (select current_setting('server_version')::float) as server_version;
 create or replace view trktr.v_replicaset as
 select schemaname as schema_name, tablename as table_name, 'committed' as table_status from pg_catalog.pg_publication_tables t
@@ -473,8 +505,8 @@ def setup_db_objects():
     """Create all necessary database objects on demand."""
     conn = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = get_pg_connection(database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user,
+                                 password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         conn.run(PERMISSIONS)
         logger.debug("""Permissions""")
         conn.run(SCHEMA)
@@ -503,10 +535,10 @@ def drop_db_objects():
     """Remove all database objects created by setup_db_objects()."""
     conn = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         conn.run("""DROP SCHEMA trktr CASCADE;""")
-        logger.info("""Node dropped""")
+        logger.info("""Node: %s dropped""", NODE)
         conn.run(
             """DROP PUBLICATION trktr_pub_66fbce89_1855_4593_91f0_f9047edd1306;""")
 
@@ -518,32 +550,12 @@ def drop_db_objects():
             conn.close()
 
 
-def get_current_logfile():
-    """Get the logfile currently used by the PostgreSQL database server."""
-    conn = None
-    try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
-        retval = conn.run(
-            """SELECT current_logfile_path FROM trktr.v_status LIMIT 1;""")
-        return retval[0][0]
-    except Exception as e:
-        logger.error(e)
-    finally:
-        if conn:
-            conn.close()
-
-    return None
-
-
 def check_failed_subscriptions():
     """Find failed SUBSCRIPTIONs used by Traktor, if any."""
     conn = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
         subscriptions = conn.run(
             f"""SELECT subname FROM pg_catalog.pg_subscription WHERE not subenabled AND subname like 'trktr_sub_{NODE}_%';""")
         if not subscriptions:
@@ -565,8 +577,8 @@ def enable_subscription(subscription):
     """ENABLE a given subscription."""
     conn = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         conn.run(f"""ALTER SUBSCRIPTION {subscription} ENABLE;""")
         logger.info("""Subscription %s ENABLED""", subscription)
     except Exception as e:
@@ -584,8 +596,8 @@ def find_new_conflicts_fdw():
     finished_at_LSN_regex = r"""([0-9A-Fa-f]+)/([0-9A-Fa-f]+)"""
 
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         select_cur = conn.run(
             f"""select log_time, context, detail, sql_state_code, message from trktr.trktr_find_unresolved_conflicts('{LSN_RESOLVER}');""")
         for line in select_cur:
@@ -642,8 +654,8 @@ def resolve_conflicts():
     """Resolve new conflicts found in the trktr.history TABLE by advancing the affected SUBSCRIPTION to the next working LSN."""
     conn = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         unresolved = conn.run(
             """SELECT lsn, "subscription", occurred, reason, relation, sql_state_code FROM trktr.history WHERE resolved IS NULL;""")
 
@@ -711,9 +723,8 @@ def sub_watcher_thread_function():
     event = None
     current_subscriptions = {}
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
 
         subscriptions = conn.run(
             f"""SELECT subname, subconninfo FROM pg_catalog.pg_subscription WHERE subname like 'trktr_sub_{NODE}_%';""")
@@ -734,10 +745,8 @@ def sub_watcher_thread_function():
         new_subscriptions = {}
         time.sleep(CHECK_INTERVAL)
         try:
-            conn = pg8000.native.Connection(database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host,
-                                            port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-            conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
-
+            conn = get_pg_connection(database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host,
+                                     port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
             for subscription in conn.run(
                     f"""SELECT subname, subconninfo FROM pg_catalog.pg_subscription WHERE subname like 'trktr_sub_{NODE}_%';"""):
                 new_subscriptions[subscription[0]] = subscription[1]
@@ -779,8 +788,8 @@ def refresher_thread_function(event, subscription, peer_conn_string):
     peer_conn = None
     peer_conn_info = parse_connection_string(peer_conn_string)
     try:
-        peer_conn = pg8000.native.Connection(database=peer_conn_info.dbname, host=peer_conn_info.host,
-                                             port=peer_conn_info.port, user=peer_conn_info.user, password=peer_conn_info.password)
+        peer_conn = get_pg_connection(database=peer_conn_info.dbname, host=peer_conn_info.host,
+                                      port=peer_conn_info.port, user=peer_conn_info.user, password=peer_conn_info.password, sslcert=peer_conn_info.sslcert, sslkey=peer_conn_info.sslkey, sslrootcert=peer_conn_info.sslrootcert, read_only=True)
         # peer_conn.autocommit = True
         peer_conn.run("""LISTEN trktr_event;""")
         while threading.main_thread().is_alive() and (not event.is_set()):
@@ -794,10 +803,9 @@ def refresher_thread_function(event, subscription, peer_conn_string):
                             notification[1], notification[2])
                 if notification[1] == """trktr_event""":
                     if notification[2] == """trktr_evt_pubchanged""":
-                        local_conn = pg8000.native.Connection(
-                            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host,
-                            port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-                        local_conn.autocommit = True
+                        local_conn = get_pg_connection(
+                            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
+                        # local_conn.autocommit = True
                         local_conn.run(
                             f"""ALTER SUBSCRIPTION {subscription} REFRESH PUBLICATION WITH (copy_data=false);""")
     except Exception as e:
@@ -813,9 +821,8 @@ def is_server_compatible():
     """Check server compatibility."""
     conn = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
         pg_version = conn.run(
             """SHOW server_version_num;""")  # Get comparable server version integer
         if int(pg_version[0][0]) < PG_MIN_VERSION:
@@ -836,9 +843,8 @@ async def history(request: Request, api_key: APIKey = Depends(api_key_auth)):
     """API to show the local conflict resolution history."""
     result = {"""node""": NODE, """resolutions""": []}
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
         r = conn.run(
             """select json_array(select row_to_json(t) from (select * from trktr.history h order by occurred desc) as t);""")
         if r[0]:
@@ -857,9 +863,8 @@ async def status(request: Request, api_key: APIKey = Depends(api_key_auth)):
     """API to show the local arbiter node status."""
     result = {}
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
         r = conn.run("""select row_to_json(t) from (select node_id as node, is_replicating, is_tainted, conflicts_pending, conflicts_resolved, round(avg_replication_lag,3) as replication_lag_ms, server_version from trktr.v_status) as t LIMIT 1;""")
         result = r[0][0]
     except Exception as e:
@@ -893,9 +898,8 @@ async def replicaset_status(request: Request, api_key: APIKey = Depends(api_key_
     result = []
     try:
         # Handle the transaction and closing the cursor
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.run("""SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY;""")
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert, read_only=True)
         for r in conn.run("""SELECT schema_name, table_name, table_status FROM trktr.v_replicaset;"""):
             result.append({"""relation""": f"""{r[0]}.{r[1]}""",
                            """status""": r[2]})
@@ -914,9 +918,9 @@ async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIK
     """API to add or remove a Traktor SUBSCRIPTION to/from the local PostgreSQL database server."""
     sql = None
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
-        conn.autocommit = True
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
+        # conn.autocommit = True
 
         if (request.method == """PUT"""):
             # print("PUT")
@@ -944,8 +948,8 @@ async def sub_ctrl(request: Request, control: SubscriptionControl, api_key: APIK
 async def repset(request: Request, api_key: APIKey = Depends(api_key_auth)):
     """COMMIT a local replicaset."""
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         conn.run(
             """CALL trktr.trktr_commit_replicaset()""")
     except Exception as e:
@@ -962,8 +966,8 @@ async def repset(request: Request, api_key: APIKey = Depends(api_key_auth)):
 async def repset_table(table: str, request: Request, api_key: APIKey = Depends(api_key_auth)):
     """Add or remove a TABLE to/from the local replicaset."""
     try:
-        conn = pg8000.native.Connection(
-            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password)
+        conn = conn = get_pg_connection(
+            database=DB_CONN_INFO.dbname, host=DB_CONN_INFO.host, port=DB_CONN_INFO.port, user=DB_CONN_INFO.user, password=DB_CONN_INFO.password, sslcert=DB_CONN_INFO.sslcert, sslkey=DB_CONN_INFO.sslkey, sslrootcert=DB_CONN_INFO.sslrootcert)
         parts = table.split('.')
         if len(parts) != 2:
             raise HTTPException(
